@@ -1,0 +1,55 @@
+# Vision-OPD Python environment for Ascend 910B / Atlas A2.
+#
+# System prerequisites are intentionally not installed by pip:
+#   - Ascend firmware and driver
+#   - CANN 9.0.0 toolkit and 910B operators
+#   - NNAL 9.0.0 (libatb.so)
+#
+# vLLM-Ascend 0.18.0 officially pairs with torch 2.9.0 and
+# torch-npu 2.9.0.post2. Do not upgrade one package independently.
+--extra-index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
+
+torch==2.9.0
+torchvision==0.24.0
+torch-npu==2.9.0.post2
+torchdata==0.11.0
+# vLLM-Ascend 0.18.0 release notes require 3.2.1 when CANN is 9.0.0.
+triton-ascend==3.2.1
+vllm==0.18.0
+vllm-ascend==0.18.0
+
+# Direct project dependencies. Transitive dependencies are resolved by pip;
+# CUDA-only packages from requirements.txt are deliberately excluded.
+accelerate==1.12.0
+codetiming==1.4.0
+datasets==4.4.2
+einops==0.8.2
+hydra-core==1.3.2
+huggingface_hub==1.9.0
+math-verify==0.8.0
+numpy==1.26.4
+omegaconf==2.3.0
+openai==2.24.0
+# 4.10 remains compatible with the pinned NumPy 1.26 ABI. Newer OpenCV wheels
+# require NumPy 2.x on Python >=3.9 and conflict with this training stack.
+opencv-python-headless==4.10.0.84
+packaging==25.0
+pandas==2.3.3
+peft==0.18.0
+pillow==12.0.0
+psutil==7.1.3
+pyarrow==22.0.0
+qwen-vl-utils==0.0.14
+ray[default]==2.53.0
+safetensors==0.7.0
+scipy==1.17.1
+sentencepiece==0.2.1
+setproctitle==1.3.7
+tensorboard==2.20.0
+tensordict==0.10.0
+tokenizers==0.22.2
+transformers==5.5.0
+typing_extensions==4.15.0
+wandb==0.23.1
+word2number==1.1

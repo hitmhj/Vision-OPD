@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Training and experiment artifacts
+checkpoints/
+outputs/
+logs/
+wandb/
+tensorboard/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+
+# Build artifacts
+build/
+dist/
+
+# Codex workspace metadata
+.agents/
+.codex/
