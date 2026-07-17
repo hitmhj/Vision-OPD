@@ -10,13 +10,16 @@ WebStudio is only an editing environment. The production entry selects Python
 and installs dependencies on the actual NPU worker. It accepts Python 3.10 or
 3.11 on either x86_64 or aarch64 and creates an isolated environment at
 `VOPD_VENV_DIR` (default: `.venv-ascend`). `VOPD_INSTALL_MODE=auto` reuses the
-environment when `requirements-ascend.txt` has not changed.
+environment only when all three Ascend lock files and the installer itself are
+unchanged.
 
-The binary stack is intentionally coherent: CANN/NNAL 9.0, torch 2.9,
-torch-npu 2.9.0.post2, triton-ascend 3.2.1 and vLLM/vLLM-Ascend 0.18.0. The
-LLaMAFactory sample's CANN 8.5.1/torch 2.10 environment cannot be mixed with
-this vLLM-Ascend release. Common settings from the sample are retained, but its
-TRL, Gradio and DeepSpeed dependencies are not installed.
+The binary stack is intentionally coherent: CANN/NNAL 9.0, torch/torchaudio
+2.9, torch-npu 2.9.0.post2, triton-ascend 3.2.1 and vLLM/vLLM-Ascend 0.18.0.
+This is the vLLM-Ascend 0.18 CANN-9.0 matrix. Its published wheel metadata also
+contains the default CANN-8.5 and CUDA/PyTorch-2.10 dependency sets, so the
+installer uses controlled phases rather than asking pip to resolve mutually
+exclusive accelerator stacks. Common settings from the LLaMAFactory sample
+are retained, but its TRL, Gradio and DeepSpeed dependencies are not installed.
 
 `CANN_ENV_SCRIPT`, `NNAL_ENV_SCRIPT`, and, when available,
 `ASDSIP_ENV_SCRIPT` are sourced in that order. CANN and ATB are required;
@@ -42,7 +45,9 @@ The same entry performs, in order:
 1. source the configuration and export `VOPD_*` variables;
 2. call `scripts/install_ascend.sh` by project-relative path; that installer
    selects a worker-side Python, creates/reuses the isolated venv, installs the
-   Ascend lock file and the editable Vision-OPD package, then runs `pip check`;
+   CANN-9.0 core, generic runtime, vLLM plugin wheels and editable Vision-OPD
+   package in that order, then validates versions, imports and dependency
+   metadata;
 3. source the configured CANN, NNAL/ATB and ASDSIP scripts exactly once;
 4. reuse or prepare data according to `VOPD_PREPARE_DATA_IF_MISSING`;
 5. run NPU and configuration preflight checks;
@@ -53,6 +58,14 @@ For an offline task, mount a complete wheelhouse for the worker's Python and
 architecture, then set `VOPD_LOCAL_WHEEL_DIR` and `VOPD_PIP_NO_INDEX=1`.
 The earlier LLaMAFactory wheelhouse is not complete for Vision-OPD and cannot
 be used as that directory.
+
+The installer first requests prebuilt vLLM and vLLM-Ascend wheels and performs
+an immediate Ascend-platform import check. If the vLLM wheel is unavailable,
+incompatible with the worker's glibc, or cannot load against the selected Torch
+ABI, it automatically builds vLLM's `VLLM_TARGET_DEVICE=empty` payload from the
+PyPI source archive; it does not require a GitHub clone. Set
+`VOPD_VLLM_ALLOW_SOURCE_FALLBACK=0` only when a wheel-only installation is
+required.
 
 All repository commands derive `PROJECT_ROOT` from the startup script location.
 The Vision-OPD folder can therefore be mounted anywhere. Host firmware, driver,
@@ -103,6 +116,13 @@ Prepare the dataset in the same format as the original project:
 ```bash
 python scripts/prepare_data.py --data-dir ./data
 ```
+
+When the repository already contains `data/train.jsonl` together with
+`data/images/images.tar.gz*` and
+`data/teacher_images/teacher_images.tar.gz`, the production entry automatically
+uses local-only preparation. It extracts those archives without contacting
+Hugging Face, preserves the compressed sources, validates the referenced image
+files and writes `data/train.parquet`.
 
 Start the platform-managed single-node training job:
 
@@ -201,10 +221,13 @@ The launchers automatically run:
 python scripts/check_ascend_env.py --min-npus 8
 ```
 
-It checks every exact version from the Ascend lock file and verifies required
-imports, CANN environment loading, visible NPU count,
-torch-npu and vLLM-Ascend, loaded transformer patches, Ray's `NPU` resources,
-`npu-smi`, and a small BF16 forward/backward operation.
+It checks every exact version from all Ascend lock files, the Qwen3.5 API used
+by Vision-OPD, vLLM's Ascend platform registration, required imports, CANN
+environment loading, visible NPU count, torch-npu, loaded transformer patches,
+Ray's `NPU` resources, `npu-smi`, and a small BF16 forward/backward operation.
+`pip check` output is accepted only for the explicitly enumerated
+CUDA/CANN-8.5 metadata entries superseded by the CANN-9.0 matrix; every other
+missing or conflicting dependency fails installation.
 Repository-only validation, which does not require Ascend hardware or
 dependencies, is available as:
 

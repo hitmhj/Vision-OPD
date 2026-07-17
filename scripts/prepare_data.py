@@ -5,14 +5,15 @@ Usage:
     python scripts/prepare_data.py --data-dir ./data
 
 This script:
-1. Downloads train.jsonl from yuanqianhao/Vision-OPD-6K
-2. Downloads and extracts images (images.tar.gz*, teacher_images.tar.gz)
-3. Converts train.jsonl to the parquet format expected by the training pipeline
+1. Optionally downloads train.jsonl and image archives from Vision-OPD-6K
+2. Extracts local image archives when they are present
+3. Validates image paths and converts train.jsonl to the expected parquet format
 """
 
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -41,10 +42,24 @@ def download_dataset(repo_id: str, data_dir: str) -> None:
     print(f"Downloading dataset from {repo_id} ...")
     snapshot_download(repo_id=repo_id, repo_type="dataset", local_dir=data_dir)
 
+
+def archive_sort_key(filename: str) -> list[str | int]:
+    """Sort split archive suffixes numerically (for example .2 before .10)."""
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", filename)]
+
+
+def extract_local_archives(data_dir: str) -> None:
+    """Extract already-mounted archives without requiring a network download."""
+
     images_dir = os.path.join(data_dir, "images")
     teacher_dir = os.path.join(data_dir, "teacher_images")
 
-    tar_files = sorted(f for f in os.listdir(images_dir) if f.startswith("images.tar.gz"))
+    tar_files = []
+    if os.path.isdir(images_dir):
+        tar_files = sorted(
+            (f for f in os.listdir(images_dir) if f.startswith("images.tar.gz")),
+            key=archive_sort_key,
+        )
     if tar_files:
         print("Extracting student images ...")
         # The dataset stores the large archive in multiple numbered parts. Join
@@ -62,16 +77,14 @@ def download_dataset(repo_id: str, data_dir: str) -> None:
         finally:
             if combined_path and os.path.exists(combined_path):
                 os.remove(combined_path)
-        for filename in tar_files:
-            os.remove(os.path.join(images_dir, filename))
 
     teacher_tar = os.path.join(teacher_dir, "teacher_images.tar.gz")
     if os.path.exists(teacher_tar):
         print("Extracting teacher images ...")
         subprocess.run(["tar", "-xf", "teacher_images.tar.gz", "-C", "."], cwd=teacher_dir, check=True)
-        os.remove(teacher_tar)
 
-    print("Image extraction complete.")
+    if tar_files or os.path.exists(teacher_tar):
+        print("Image extraction complete; source archives were preserved.")
 
 
 def clean_question(problem: str) -> str:
@@ -87,6 +100,10 @@ def build_record(item: dict[str, Any], data_dir: str) -> dict[str, Any]:
     image_path = os.path.join(data_dir, image_rel)
     teacher_path = os.path.join(data_dir, teacher_rel)
     question = clean_question(item.get("problem", ""))
+
+    missing_paths = [path for path in (image_path, teacher_path) if not os.path.isfile(path)]
+    if missing_paths:
+        raise FileNotFoundError("Dataset record references missing image(s): " + ", ".join(missing_paths))
 
     return {
         "data_source": "zwz_rl_vqa_bbox_teacher",
@@ -133,6 +150,9 @@ def main() -> None:
     if not args.skip_download:
         download_dataset(args.hf_repo, data_dir)
 
+    # Extraction is intentionally independent of downloading: ModelArts jobs
+    # commonly mount train.jsonl and the archives before the task starts.
+    extract_local_archives(data_dir)
     convert_to_parquet(data_dir)
     print(f"\nData preparation complete. Training data at: {data_dir}/train.parquet")
 

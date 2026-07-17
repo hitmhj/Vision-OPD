@@ -1,0 +1,11 @@
+# Binary compatibility unit for Atlas 910B with CANN/NNAL 9.0.
+# Upgrade or downgrade every entry together.  Do not add a CUDA PyTorch index.
+--extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
+
+torch==2.9.0
+torchvision==0.24.0
+torchaudio==2.9.0
+torch-npu==2.9.0.post2
+torchdata==0.11.0
+triton-ascend==3.2.1
+

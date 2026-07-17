@@ -27,12 +27,16 @@ _vopd_resolve_path() {
 
 VENV_DIR="$(_vopd_resolve_path "${VOPD_VENV_DIR:-.venv-ascend}")"
 REQUIREMENTS_FILE="$(_vopd_resolve_path "${VOPD_ASCEND_REQUIREMENTS:-requirements-ascend.txt}")"
+CORE_REQUIREMENTS_FILE="$(_vopd_resolve_path "${VOPD_ASCEND_CORE_REQUIREMENTS:-requirements-ascend-core.txt}")"
+PLUGIN_REQUIREMENTS_FILE="$(_vopd_resolve_path "${VOPD_ASCEND_PLUGIN_REQUIREMENTS:-requirements-ascend-plugins.txt}")"
 INSTALL_MODE="${VOPD_INSTALL_MODE:-auto}"
 
-if [[ ! -f "$REQUIREMENTS_FILE" ]]; then
-    echo "Ascend requirements file does not exist: $REQUIREMENTS_FILE" >&2
-    exit 2
-fi
+for _vopd_lock_file in "$REQUIREMENTS_FILE" "$CORE_REQUIREMENTS_FILE" "$PLUGIN_REQUIREMENTS_FILE"; do
+    if [[ ! -f "$_vopd_lock_file" ]]; then
+        echo "Ascend requirements file does not exist: $_vopd_lock_file" >&2
+        exit 2
+    fi
+done
 
 _vopd_python_supported() {
     "$1" -c 'import sys; raise SystemExit(0 if (3, 10) <= sys.version_info[:2] < (3, 12) else 1)' \
@@ -76,7 +80,9 @@ echo "Vision-OPD dependency target"
 echo "  worker_arch:      $MACHINE"
 echo "  bootstrap_python: $BOOTSTRAP_PYTHON ($($BOOTSTRAP_PYTHON --version 2>&1))"
 echo "  venv:             $VENV_DIR"
-echo "  requirements:     $REQUIREMENTS_FILE"
+echo "  runtime_lock:     $REQUIREMENTS_FILE"
+echo "  npu_core_lock:    $CORE_REQUIREMENTS_FILE"
+echo "  plugin_lock:      $PLUGIN_REQUIREMENTS_FILE"
 
 if [[ "$INSTALL_MODE" == "never" ]]; then
     if [[ ! -x "$VENV_DIR/bin/python" ]]; then
@@ -91,8 +97,18 @@ if [[ "$INSTALL_MODE" != "auto" && "$INSTALL_MODE" != "always" ]]; then
     exit 2
 fi
 
-REQUIREMENTS_SHA="$($BOOTSTRAP_PYTHON -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$REQUIREMENTS_FILE")"
-INSTALL_FINGERPRINT="schema=2;requirements=${REQUIREMENTS_SHA};python=$($BOOTSTRAP_PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")');arch=${MACHINE}"
+REQUIREMENTS_SHA="$($BOOTSTRAP_PYTHON -c '
+import hashlib, pathlib, sys
+digest = hashlib.sha256()
+for name in sys.argv[1:]:
+    path = pathlib.Path(name)
+    digest.update(path.name.encode())
+    digest.update(b"\0")
+    digest.update(path.read_bytes())
+    digest.update(b"\0")
+print(digest.hexdigest())
+' "$REQUIREMENTS_FILE" "$CORE_REQUIREMENTS_FILE" "$PLUGIN_REQUIREMENTS_FILE" "$0")"
+INSTALL_FINGERPRINT="schema=4;requirements=${REQUIREMENTS_SHA};python=$($BOOTSTRAP_PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")');arch=${MACHINE}"
 MARKER_FILE="$VENV_DIR/.vision_opd_requirements.sha256"
 if [[ "$INSTALL_MODE" == "auto" && -x "$VENV_DIR/bin/python" && -f "$MARKER_FILE" ]]; then
     if [[ "$(<"$MARKER_FILE")" == "$INSTALL_FINGERPRINT" ]]; then
@@ -120,7 +136,12 @@ if ! _vopd_python_supported "$RUNTIME_PYTHON"; then
     exit 2
 fi
 
-PIP_ARGS=(--disable-pip-version-check --no-input)
+PIP_ARGS=(
+    --disable-pip-version-check
+    --no-input
+    --timeout "${VOPD_PIP_TIMEOUT:-120}"
+    --retries "${VOPD_PIP_RETRIES:-5}"
+)
 if [[ "${VOPD_PIP_NO_INDEX:-0}" == "1" ]]; then
     PIP_ARGS+=(--no-index)
     if [[ -z "${VOPD_LOCAL_WHEEL_DIR:-}" ]]; then
@@ -145,11 +166,88 @@ if [[ "${VOPD_PIP_NO_INDEX:-0}" == "1" ]]; then
 else
     "$RUNTIME_PYTHON" -m pip install "${PIP_ARGS[@]}" --upgrade "pip>=23.3,<26" setuptools wheel
 fi
-"$RUNTIME_PYTHON" -m pip install "${PIP_ARGS[@]}" --upgrade --upgrade-strategy only-if-needed -r "$REQUIREMENTS_FILE"
+
+echo "[install 1/4] Installing the CANN 9.0 / PyTorch 2.9 binary compatibility unit..."
+"$RUNTIME_PYTHON" -m pip install \
+    "${PIP_ARGS[@]}" \
+    --upgrade \
+    --upgrade-strategy only-if-needed \
+    -r "$CORE_REQUIREMENTS_FILE"
+
+echo "[install 2/4] Installing Vision-OPD and generic inference dependencies..."
+"$RUNTIME_PYTHON" -m pip install \
+    "${PIP_ARGS[@]}" \
+    --upgrade \
+    --upgrade-strategy only-if-needed \
+    --constraint "$CORE_REQUIREMENTS_FILE" \
+    -r "$REQUIREMENTS_FILE"
+
+echo "[install 3/4] Installing prebuilt vLLM and vLLM-Ascend wheels..."
+# vLLM 0.18's wheel metadata describes its CUDA/PyTorch-2.10 build, while the
+# official Ascend 0.18 CANN-9.0 matrix uses PyTorch 2.9 and torch-npu post2.
+# Installing only these two wheel payloads after their complete curated runtime
+# prevents pip from replacing the working NPU ABI with CUDA or CANN-8.5 pins.
+_vopd_install_empty_vllm() {
+    echo "Building vLLM's hardware-neutral payload (VLLM_TARGET_DEVICE=empty)..."
+    # The PyPI source archive avoids a GitHub dependency and also supports
+    # worker images older than the upstream manylinux_2_31 aarch64 wheel.
+    VLLM_TARGET_DEVICE=empty "$RUNTIME_PYTHON" -m pip install \
+        "${PIP_ARGS[@]}" \
+        --upgrade \
+        --force-reinstall \
+        --no-deps \
+        --no-build-isolation \
+        --no-binary=vllm \
+        "vllm==0.18.0"
+    "$RUNTIME_PYTHON" -m pip install \
+        "${PIP_ARGS[@]}" \
+        --upgrade \
+        --only-binary=:all: \
+        --no-deps \
+        "vllm-ascend==0.18.0"
+}
+
+_vopd_vllm_importable() {
+    VLLM_PLUGINS=ascend "$RUNTIME_PYTHON" -c '
+import vllm
+import vllm_ascend
+from vllm.platforms import current_platform
+if getattr(current_platform, "device_type", None) != "npu":
+    raise RuntimeError(f"vLLM platform is {type(current_platform).__name__}, not Ascend NPU")
+print(f"vLLM import check: {vllm.__version__}; {type(current_platform).__name__}")
+'
+}
+
+if "$RUNTIME_PYTHON" -m pip install \
+    "${PIP_ARGS[@]}" \
+    --upgrade \
+    --only-binary=:all: \
+    --no-deps \
+    -r "$PLUGIN_REQUIREMENTS_FILE"; then
+    if ! _vopd_vllm_importable; then
+        if [[ "${VOPD_VLLM_ALLOW_SOURCE_FALLBACK:-1}" != "1" ]]; then
+            echo "The prebuilt vLLM wheel cannot load with the NPU stack and source fallback is disabled." >&2
+            exit 1
+        fi
+        echo "The prebuilt vLLM wheel cannot load with the selected NPU ABI; rebuilding it..."
+        _vopd_install_empty_vllm
+    fi
+else
+    if [[ "${VOPD_VLLM_ALLOW_SOURCE_FALLBACK:-1}" != "1" ]]; then
+        echo "Prebuilt vLLM installation failed and source fallback is disabled." >&2
+        exit 1
+    fi
+    echo "Prebuilt vLLM wheel is incompatible or unavailable; using the source fallback..."
+    _vopd_install_empty_vllm
+fi
+_vopd_vllm_importable
+
+echo "[install 4/4] Installing the local Vision-OPD package..."
 "$RUNTIME_PYTHON" -m pip install "${PIP_ARGS[@]}" --no-build-isolation --no-deps --editable "$PROJECT_ROOT"
 
-# Validate resolver consistency before marking the environment reusable.
-"$RUNTIME_PYTHON" -m pip check
+# Validate every direct pin, every import used by the active training path and
+# all dependency metadata except the documented CANN-9.0/plugin divergences.
+"$RUNTIME_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_env.py" --dependencies-only
 printf '%s\n' "$INSTALL_FINGERPRINT" > "$MARKER_FILE"
 
 echo "Vision-OPD Ascend Python environment is ready: $RUNTIME_PYTHON"

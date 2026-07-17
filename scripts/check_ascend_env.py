@@ -17,11 +17,41 @@ from pathlib import Path
 EXPECTED_VERSIONS = {
     "torch": "2.9.0",
     "torchvision": "0.24.0",
+    "torchaudio": "2.9.0",
     "torch-npu": "2.9.0.post2",
     "torchdata": "0.11.0",
     "triton-ascend": "3.2.1",
     "vllm": "0.18.0",
     "vllm-ascend": "0.18.0",
+    "transformers": "5.5.0",
+}
+
+LOCK_FILES = (
+    "requirements-ascend.txt",
+    "requirements-ascend-core.txt",
+    "requirements-ascend-plugins.txt",
+)
+
+# vLLM 0.18 was published with CUDA/PyTorch-2.10 metadata.  The official
+# vLLM-Ascend 0.18 CANN-9.0 matrix deliberately replaces these dependencies.
+# Only these owner/dependency pairs may be ignored; every other pip-check
+# failure remains fatal.
+ALLOWED_METADATA_DIVERGENCES = {
+    "vllm": {
+        "flashinfer-python",
+        "nvidia-cudnn-frontend",
+        "nvidia-cutlass-dsl",
+        "opencv-python-headless",
+        "quack-kernels",
+        "torch",
+        "torchaudio",
+        "torchvision",
+        "transformers",
+    },
+    "vllm-ascend": {
+        "torch-npu",
+        "triton-ascend",
+    },
 }
 
 CUDA_ONLY_QWEN_FAST_PATHS = (
@@ -47,8 +77,10 @@ RUNTIME_IMPORTS = {
     "torch": "torch",
     "torch-npu": "torch_npu",
     "torchdata": "torchdata",
+    "torchaudio": "torchaudio",
     "torchvision": "torchvision",
     "transformers": "transformers",
+    "triton-ascend": "triton",
     "vllm": "vllm",
     "vllm-ascend": "vllm_ascend",
 }
@@ -79,18 +111,25 @@ def check_version(distribution: str, expected: str) -> bool:
 
 
 def pinned_requirements(project_root: Path) -> dict[str, str]:
-    """Return every exact direct dependency from the Ascend lock file."""
-    requirements_file = project_root / "requirements-ascend.txt"
+    """Return every exact direct dependency from all three Ascend locks."""
     requirements: dict[str, str] = {}
-    for raw_line in requirements_file.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith(("#", "-")):
-            continue
-        match = re.fullmatch(r"([A-Za-z0-9_.-]+)(?:\[[^]]+\])?==([^\s;]+)", line)
-        if match is None:
-            fail(f"Ascend dependency must use an exact == pin: {line}")
-            continue
-        requirements[match.group(1)] = match.group(2)
+    for relative_path in LOCK_FILES:
+        requirements_file = project_root / relative_path
+        for raw_line in requirements_file.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(("#", "-")):
+                continue
+            match = re.fullmatch(r"([A-Za-z0-9_.-]+)(?:\[[^]]+\])?==([^\s;]+)", line)
+            if match is None:
+                fail(f"Ascend dependency must use an exact == pin ({relative_path}): {line}")
+                continue
+            distribution, version = match.groups()
+            canonical = distribution.lower().replace("_", "-")
+            previous = requirements.get(canonical)
+            if previous is not None and previous != version:
+                fail(f"conflicting direct pins for {canonical}: {previous} and {version}")
+                continue
+            requirements[canonical] = version
     return requirements
 
 
@@ -118,6 +157,84 @@ def check_runtime_imports() -> bool:
             ok(f"runtime import: {distribution}=={version}")
         except Exception as exc:
             fail(f"runtime cannot import {distribution}: {exc}")
+            success = False
+    return success
+
+
+def check_qwen35_transformers_api() -> bool:
+    """Verify the exact Transformers API patched by the Vision-OPD trainer."""
+    try:
+        module = importlib.import_module("transformers.models.qwen3_5.modeling_qwen3_5")
+        required_symbols = (
+            "Qwen3_5CausalLMOutputWithPast",
+            "Qwen3_5ForConditionalGeneration",
+            "Qwen3_5Model",
+            "Qwen3_5TextModel",
+            "Qwen3_5VisionModel",
+        )
+        missing = [name for name in required_symbols if not hasattr(module, name)]
+        if missing:
+            fail(f"Transformers Qwen3.5 API is missing: {', '.join(missing)}")
+            return False
+    except Exception as exc:
+        fail(f"cannot load the Transformers Qwen3.5 implementation: {exc}")
+        return False
+    ok("Transformers Qwen3.5 training API")
+    return True
+
+
+def check_vllm_ascend_registration() -> bool:
+    """Ensure vLLM selected the Ascend plugin instead of its CUDA platform."""
+    try:
+        importlib.import_module("vllm_ascend")
+        platforms = importlib.import_module("vllm.platforms")
+        current_platform = platforms.current_platform
+        device_type = getattr(current_platform, "device_type", None)
+        if device_type != "npu":
+            fail(
+                f"vLLM selected platform {type(current_platform).__name__} "
+                f"(device_type={device_type!r}) instead of Ascend NPU"
+            )
+            return False
+    except Exception as exc:
+        fail(f"vLLM Ascend plugin registration failed: {exc}")
+        return False
+    ok(f"vLLM Ascend platform registration ({type(current_platform).__name__})")
+    return True
+
+
+def check_metadata_consistency() -> bool:
+    """Run pip check while accepting only documented CANN-9.0 divergences."""
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "check"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    output_lines = [line.strip() for line in (result.stdout + result.stderr).splitlines() if line.strip()]
+    if result.returncode == 0:
+        ok("Python package metadata consistency")
+        return True
+
+    success = True
+    pattern = re.compile(
+        r"^(?P<owner>[A-Za-z0-9_.-]+)\s+\S+\s+(?:has requirement|requires)\s+"
+        r"(?P<dependency>[A-Za-z0-9_.-]+)",
+        re.IGNORECASE,
+    )
+    for line in output_lines:
+        match = pattern.match(line)
+        if match is None:
+            fail(f"unrecognized pip-check failure: {line}")
+            success = False
+            continue
+        owner = match.group("owner").lower().replace("_", "-")
+        dependency = match.group("dependency").lower().replace("_", "-")
+        if dependency in ALLOWED_METADATA_DIVERGENCES.get(owner, set()):
+            ok(f"documented CANN-9.0 metadata override: {owner} -> {dependency}")
+        else:
+            fail(f"unexpected dependency conflict: {line}")
             success = False
     return success
 
@@ -217,6 +334,8 @@ def check_lifecycle_config(min_npus: int) -> bool:
 def check_static(project_root: Path) -> bool:
     required_files = [
         "requirements-ascend.txt",
+        "requirements-ascend-core.txt",
+        "requirements-ascend-plugins.txt",
         "scripts/ascend_env.sh",
         "scripts/install_ascend.sh",
         "scripts/prepare_data.py",
@@ -239,14 +358,19 @@ def check_static(project_root: Path) -> bool:
     if not success:
         return False
 
-    requirements = (project_root / "requirements-ascend.txt").read_text(encoding="utf-8")
-    for raw_line in requirements.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith(("#", "-")):
-            continue
-        if re.fullmatch(r"([A-Za-z0-9_.-]+)(?:\[[^]]+\])?==([^\s;]+)", line) is None:
-            fail(f"Ascend dependency must use an exact == pin: {line}")
-            success = False
+    lock_contents = {
+        relative_path: (project_root / relative_path).read_text(encoding="utf-8")
+        for relative_path in LOCK_FILES
+    }
+    requirements = "\n".join(lock_contents.values())
+    for relative_path, content in lock_contents.items():
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(("#", "-")):
+                continue
+            if re.fullmatch(r"([A-Za-z0-9_.-]+)(?:\[[^]]+\])?==([^\s;]+)", line) is None:
+                fail(f"Ascend dependency must use an exact == pin ({relative_path}): {line}")
+                success = False
     for distribution, expected in EXPECTED_VERSIONS.items():
         pattern = rf"(?m)^{re.escape(distribution)}=={re.escape(expected)}$"
         if re.search(pattern, requirements) is None:
@@ -255,6 +379,11 @@ def check_static(project_root: Path) -> bool:
     for distribution in CUDA_ONLY_QWEN_FAST_PATHS:
         if re.search(rf"(?m)^{re.escape(distribution)}(?:==|>=|<=|~=)", requirements):
             fail(f"requirements-ascend.txt includes CUDA-only package: {distribution}")
+            success = False
+    forbidden_sources = ("download.pytorch.org", "/whl/cpu")
+    for forbidden_source in forbidden_sources:
+        if forbidden_source in requirements:
+            fail(f"Ascend locks contain unreachable or CUDA-oriented source: {forbidden_source}")
             success = False
     launcher = (project_root / "scripts/run_vision_opd.sh").read_text(encoding="utf-8")
     required_overrides = [
@@ -305,7 +434,18 @@ def check_static(project_root: Path) -> bool:
         if forbidden in dependency_installer:
             fail(f"dependency installer still depends on the LLaMAFactory sample: {forbidden}")
             success = False
-    for required in ("requirements-ascend.txt", "-m venv", "-m pip install", '--editable "$PROJECT_ROOT"', "-m pip check"):
+    for required in (
+        "requirements-ascend.txt",
+        "requirements-ascend-core.txt",
+        "requirements-ascend-plugins.txt",
+        "-m venv",
+        "-m pip install",
+        "--constraint",
+        "--only-binary=:all:",
+        "--no-deps",
+        '--editable "$PROJECT_ROOT"',
+        "--dependencies-only",
+    ):
         if required not in dependency_installer:
             fail(f"dependency installer is missing lifecycle operation: {required}")
             success = False
@@ -382,6 +522,8 @@ def check_static(project_root: Path) -> bool:
         "VOPD_INSTALL_MODE",
         "VOPD_VENV_DIR",
         "VOPD_ASCEND_REQUIREMENTS",
+        "VOPD_ASCEND_CORE_REQUIREMENTS",
+        "VOPD_ASCEND_PLUGIN_REQUIREMENTS",
         "VOPD_BOOTSTRAP_PYTHON",
         "CANN_ENV_SCRIPT",
         "NNAL_ENV_SCRIPT",
@@ -416,6 +558,9 @@ def check_runtime(project_root: Path, min_npus: int) -> bool:
     # cannot silently leak into the training process.
     success = check_declared_dependencies(project_root)
     success = check_runtime_imports() and success
+    success = check_qwen35_transformers_api() and success
+    success = check_vllm_ascend_registration() and success
+    success = check_metadata_consistency() and success
     success = check_lifecycle_config(min_npus) and success
     if not ((3, 10) <= sys.version_info[:2] < (3, 12)):
         fail(f"Python {platform.python_version()} is unsupported; use Python 3.10 or 3.11")
@@ -552,6 +697,10 @@ def main() -> int:
     success = check_static(project_root)
     if args.dependencies_only:
         success = check_declared_dependencies(project_root) and success
+        success = check_runtime_imports() and success
+        success = check_qwen35_transformers_api() and success
+        success = check_vllm_ascend_registration() and success
+        success = check_metadata_consistency() and success
     elif not args.static_only:
         success = check_runtime(project_root, args.min_npus) and success
     if success:

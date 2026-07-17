@@ -145,7 +145,14 @@ free -h
 _vopd_log "[4/7] Resolving the training dataset..."
 if [[ ! -f "$VOPD_TRAIN_FILE" ]]; then
     if [[ "$VOPD_PREPARE_DATA_IF_MISSING" == "1" ]]; then
-        "$PYTHON_BIN" "$PROJECT_ROOT/scripts/prepare_data.py" --data-dir "$VOPD_DATA_DIR"
+        _vopd_prepare_args=(--data-dir "$VOPD_DATA_DIR")
+        if [[ -f "$VOPD_DATA_DIR/train.jsonl" ]]; then
+            _vopd_log "Local train.jsonl found; extracting mounted archives without downloading the dataset."
+            _vopd_prepare_args+=(--skip-download)
+        else
+            _vopd_log "Local train.jsonl is absent; downloading and preparing Vision-OPD-6K."
+        fi
+        "$PYTHON_BIN" "$PROJECT_ROOT/scripts/prepare_data.py" "${_vopd_prepare_args[@]}"
     else
         echo "Training data is missing: $VOPD_TRAIN_FILE" >&2
         echo "Mount it and set VOPD_TRAIN_FILE, or set VOPD_PREPARE_DATA_IF_MISSING=1." >&2

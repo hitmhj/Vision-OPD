@@ -1,0 +1,5 @@
+# Installed with --no-deps after the complete CANN 9.0 runtime is present.
+# See requirements-ascend.txt and scripts/install_ascend.sh for why resolver
+# metadata must not select the CANN 8.5 or CUDA dependency sets here.
+vllm==0.18.0
+vllm-ascend==0.18.0

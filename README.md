@@ -57,6 +57,11 @@ stack, load CANN/NNAL, prepare data, preflight, train, save checkpoints, and
 optionally merge the latest checkpoint. ModelArts-injected `VOPD_*` values take
 precedence over file defaults.
 
+Installation is split into a CANN-9.0 binary lock, a generic runtime lock and
+the vLLM hardware-plugin lock. This prevents pip's CUDA/PyTorch-2.10 metadata
+from replacing torch 2.9/torch-npu 2.9.0.post2. It uses the platform's PyPI
+mirror and Huawei Ascend index only; `download.pytorch.org` is not contacted.
+
 Every Vision-OPD command derives `PROJECT_ROOT` from its launcher location, so
 the complete repository can be mounted at any path. The vendor environment
 scripts run without Bash nounset and `ZSH_VERSION` is defined before ATB is
@@ -69,6 +74,18 @@ Download and preprocess the [Vision-OPD-6K](https://huggingface.co/datasets/yuan
 ```bash
 python scripts/prepare_data.py --data-dir ./data
 ```
+
+If `data/train.jsonl`, `data/images/images.tar.gz*`, and
+`data/teacher_images/teacher_images.tar.gz` are already mounted, no dataset
+download is needed:
+
+```bash
+python scripts/prepare_data.py --data-dir ./data --skip-download
+```
+
+The unified Ascend entry detects this local layout automatically, extracts the
+archives, preserves the original compressed files, validates every referenced
+student/teacher image, and creates `data/train.parquet` before training.
 
 This downloads images and metadata from HuggingFace, extracts archives, and converts `train.jsonl` to the parquet format expected by the training pipeline.
 
