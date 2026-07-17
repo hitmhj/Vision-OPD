@@ -1,11 +1,11 @@
-# Binary compatibility unit for Atlas 910B with CANN/NNAL 9.0.
-# Upgrade or downgrade every entry together.  Do not add a CUDA PyTorch index.
---extra-index-url https://mirrors.huaweicloud.com/ascend/repos/pypi
+# Official vLLM-Ascend 0.18.0 compatibility unit for Atlas 910B / Atlas A2.
+# CANN 8.5.1, Python 3.10 and aarch64 are validated before this lock is used.
+# Upgrade or downgrade every entry together. Package sources are controlled by
+# scripts/install_ascend.sh so a lock file never contacts an external index.
 
 torch==2.9.0
 torchvision==0.24.0
 torchaudio==2.9.0
-torch-npu==2.9.0.post2
+torch-npu==2.9.0.post1+git4c901a4
 torchdata==0.11.0
-triton-ascend==3.2.1
-
+triton-ascend==3.2.0.dev20260322

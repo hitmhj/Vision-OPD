@@ -82,7 +82,7 @@ wheel==0.46.3
 xgrammar==0.1.33
 
 # vLLM-Ascend 0.18 generic/runtime requirements.  Versions that differ for
-# CANN 9.0 live in requirements-ascend-core.txt.
+# The CANN 8.5.1/PyTorch binary compatibility unit lives in requirements-ascend-core.txt.
 arctic-inference==0.1.1
 cmake==4.1.2
 decorator==5.2.1

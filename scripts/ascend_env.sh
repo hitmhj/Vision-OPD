@@ -44,6 +44,50 @@ fi
 # shellcheck disable=SC1090
 source "$CANN_ENV_SCRIPT"
 set +u
+
+_vopd_detect_cann_version() {
+    local candidate detected
+    for candidate in \
+        "${ASCEND_HOME_PATH:-}/version.cfg" \
+        "${ASCEND_HOME_PATH:-}/../ascend_toolkit_install.info" \
+        "${ASCEND_TOOLKIT_HOME:-}/version.cfg" \
+        "$(dirname "$CANN_ENV_SCRIPT")/version.cfg" \
+        "$(dirname "$(dirname "$CANN_ENV_SCRIPT")")/version.cfg" \
+        "$(dirname "$(dirname "$CANN_ENV_SCRIPT")")/ascend_toolkit_install.info" \
+        /usr/local/Ascend/ascend-toolkit/latest/version.cfg \
+        "/usr/local/Ascend/ascend-toolkit/latest/$(uname -m)-linux/ascend_toolkit_install.info" \
+        /etc/Ascend/ascend_cann_install.info; do
+        if [[ -n "$candidate" && -f "$candidate" ]]; then
+            detected="$(grep -Eio '[0-9]+\.[0-9]+\.[0-9]+' "$candidate" | head -n 1 || true)"
+            if [[ -n "$detected" ]]; then
+                printf '%s\n' "$detected"
+                return 0
+            fi
+        fi
+    done
+    detected="$(printf '%s\n' "$CANN_ENV_SCRIPT" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
+    [[ -n "$detected" ]] && printf '%s\n' "$detected"
+    return 0
+}
+
+VOPD_DETECTED_CANN_VERSION="$(_vopd_detect_cann_version)"
+export VOPD_DETECTED_CANN_VERSION
+if [[ -n "${VOPD_EXPECTED_CANN_VERSION:-}" ]]; then
+    if [[ -z "$VOPD_DETECTED_CANN_VERSION" ]]; then
+        if [[ "${VOPD_REQUIRE_CANN_VERSION_MATCH:-1}" == "1" ]]; then
+            echo "Cannot determine CANN version after sourcing: $CANN_ENV_SCRIPT" >&2
+            echo "Vision-OPD requires CANN ${VOPD_EXPECTED_CANN_VERSION}." >&2
+            return 1
+        fi
+    elif [[ "$VOPD_DETECTED_CANN_VERSION" != "$VOPD_EXPECTED_CANN_VERSION" ]]; then
+        echo "CANN version mismatch: detected $VOPD_DETECTED_CANN_VERSION, expected $VOPD_EXPECTED_CANN_VERSION." >&2
+        echo "Do not mix the vLLM-Ascend 0.18.0/CANN 8.5.1 dependency line with another CANN runtime." >&2
+        return 1
+    else
+        echo "CANN version verified: $VOPD_DETECTED_CANN_VERSION"
+    fi
+fi
+
 # shellcheck disable=SC1090
 source "$NNAL_ENV_SCRIPT" --cxx_abi=0
 set +u

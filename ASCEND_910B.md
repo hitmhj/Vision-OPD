@@ -7,19 +7,24 @@ environment must not be mixed.
 ## Platform-provided software environment
 
 WebStudio is only an editing environment. The production entry selects Python
-and installs dependencies on the actual NPU worker. It accepts Python 3.10 or
-3.11 on either x86_64 or aarch64 and creates an isolated environment at
+and installs dependencies on the actual NPU worker. This target is deliberately
+fixed to the observed Python 3.10/aarch64 Atlas A2 worker and creates an isolated environment at
 `VOPD_VENV_DIR` (default: `.venv-ascend`). `VOPD_INSTALL_MODE=auto` reuses the
 environment only when all three Ascend lock files and the installer itself are
 unchanged.
 
-The binary stack is intentionally coherent: CANN/NNAL 9.0, torch/torchaudio
-2.9, torch-npu 2.9.0.post2, triton-ascend 3.2.1 and vLLM/vLLM-Ascend 0.18.0.
-This is the vLLM-Ascend 0.18 CANN-9.0 matrix. Its published wheel metadata also
-contains the default CANN-8.5 and CUDA/PyTorch-2.10 dependency sets, so the
-installer uses controlled phases rather than asking pip to resolve mutually
-exclusive accelerator stacks. Common settings from the LLaMAFactory sample
-are retained, but its TRL, Gradio and DeepSpeed dependencies are not installed.
+The binary stack is the official stable vLLM-Ascend 0.18.0 Atlas A2 matrix:
+CANN 8.5.1, torch/torchaudio 2.9.0, the cp310/aarch64 special
+`torch-npu==2.9.0.post1+git4c901a4` build,
+`triton-ascend==3.2.0.dev20260322`, and vLLM/vLLM-Ascend 0.18.0. Do not replace
+individual members of this compatibility unit. Common settings from the
+LLaMAFactory sample are retained, but its TRL, Gradio and DeepSpeed dependencies
+are not installed.
+
+The authoritative compatibility table is the
+[vLLM-Ascend versioning policy](https://docs.vllm.ai/projects/ascend/en/latest/community/versioning_policy.html),
+and the special wheel filenames come from the
+[v0.18.0 release notes](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.18.0).
 
 `CANN_ENV_SCRIPT`, `NNAL_ENV_SCRIPT`, and, when available,
 `ASDSIP_ENV_SCRIPT` are sourced in that order. CANN and ATB are required;
@@ -45,7 +50,7 @@ The same entry performs, in order:
 1. source the configuration and export `VOPD_*` variables;
 2. call `scripts/install_ascend.sh` by project-relative path; that installer
    selects a worker-side Python, creates/reuses the isolated venv, installs the
-   CANN-9.0 core, generic runtime, vLLM plugin wheels and editable Vision-OPD
+   CANN-8.5.1 core, generic runtime, vLLM plugin wheels and editable Vision-OPD
    package in that order, then validates versions, imports and dependency
    metadata;
 3. source the configured CANN, NNAL/ATB and ASDSIP scripts exactly once;
@@ -54,18 +59,36 @@ The same entry performs, in order:
 6. train and save FSDP checkpoints;
 7. optionally merge the latest checkpoint according to `VOPD_AUTO_MERGE`.
 
-For an offline task, mount a complete wheelhouse for the worker's Python and
-architecture, then set `VOPD_LOCAL_WHEEL_DIR` and `VOPD_PIP_NO_INDEX=1`.
+Production installation is offline by default. Mount a complete wheelhouse for
+Python 3.10/aarch64, then set `VOPD_LOCAL_WHEEL_DIR` if it is not the default
+project-relative `whls` directory. `VOPD_PIP_NO_INDEX=1` is already the default.
 The earlier LLaMAFactory wheelhouse is not complete for Vision-OPD and cannot
 be used as that directory.
 
-The installer first requests prebuilt vLLM and vLLM-Ascend wheels and performs
-an immediate Ascend-platform import check. If the vLLM wheel is unavailable,
-incompatible with the worker's glibc, or cannot load against the selected Torch
-ABI, it automatically builds vLLM's `VLLM_TARGET_DEVICE=empty` payload from the
-PyPI source archive; it does not require a GitHub clone. Set
-`VOPD_VLLM_ALLOW_SOURCE_FALLBACK=0` only when a wheel-only installation is
-required.
+The installer uses `--no-index --find-links`, ignores inherited pip
+configuration, and clears inherited `PIP_EXTRA_INDEX_URL`/`PIP_FIND_LINKS`.
+It validates the wheelhouse and performs `pip --dry-run` resolution before
+installing the NPU stack. Neither PyTorch, Huawei, Hugging Face nor GitHub is
+contacted by the production default. The wheelhouse must include the exact
+cp310/aarch64 `torch_npu-2.9.0.post1+git4c901a4` and
+`triton_ascend-3.2.0.dev20260322` wheels plus every direct and transitive package
+needed by the three Ascend lock files.
+
+Model and dataset downloads are disabled in the production entry by default.
+Upload or mount Qwen3.5-4B under the default `models/Qwen3.5-4B`, or inject
+`VOPD_MODEL_PATH=/mounted/model/path`. Relative injected paths are resolved
+against the repository rather than the algorithm launch directory.
+`VOPD_REQUIRE_LOCAL_MODEL=1` validates the config, processor, tokenizer, weight
+index and all referenced shards before dependency
+installation, and `VOPD_HF_OFFLINE=1` exports the Hugging Face/Transformers/
+Datasets offline flags. The local compressed dataset layout documented below is
+then prepared without contacting Hugging Face.
+
+The installer requires prebuilt vLLM and vLLM-Ascend wheels and performs an
+immediate Ascend-platform import check. Source fallback is disabled by default
+because an offline ModelArts worker cannot fetch source or missing build
+dependencies. It can be enabled explicitly only when a complete local source
+build wheelhouse has been prepared.
 
 All repository commands derive `PROJECT_ROOT` from the startup script location.
 The Vision-OPD folder can therefore be mounted anywhere. Host firmware, driver,
@@ -75,9 +98,9 @@ the project-controlled venv on the worker.
 If CANN is installed in a non-standard location:
 
 ```bash
-CANN_ENV_SCRIPT=/opt/Ascend/cann-9.0.0/set_env.sh \
-NNAL_ENV_SCRIPT=/opt/Ascend/nnal-9.0.0/atb/set_env.sh \
-ASDSIP_ENV_SCRIPT=/opt/Ascend/nnal-9.0.0/asdsip/set_env.sh \
+CANN_ENV_SCRIPT=/opt/Ascend/cann-8.5.1/set_env.sh \
+NNAL_ENV_SCRIPT=/opt/Ascend/nnal/atb/set_env.sh \
+ASDSIP_ENV_SCRIPT=/opt/Ascend/nnal/asdsip/set_env.sh \
 bash scripts/start_vision_opd_ascend.sh
 ```
 
@@ -226,7 +249,7 @@ by Vision-OPD, vLLM's Ascend platform registration, required imports, CANN
 environment loading, visible NPU count, torch-npu, loaded transformer patches,
 Ray's `NPU` resources, `npu-smi`, and a small BF16 forward/backward operation.
 `pip check` output is accepted only for the explicitly enumerated
-CUDA/CANN-8.5 metadata entries superseded by the CANN-9.0 matrix; every other
+CUDA/plugin metadata entries superseded by the official Ascend matrix; every other
 missing or conflicting dependency fails installation.
 Repository-only validation, which does not require Ascend hardware or
 dependencies, is available as:

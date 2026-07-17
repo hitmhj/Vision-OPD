@@ -18,9 +18,9 @@ EXPECTED_VERSIONS = {
     "torch": "2.9.0",
     "torchvision": "0.24.0",
     "torchaudio": "2.9.0",
-    "torch-npu": "2.9.0.post2",
+    "torch-npu": "2.9.0.post1+git4c901a4",
     "torchdata": "0.11.0",
-    "triton-ascend": "3.2.1",
+    "triton-ascend": "3.2.0.dev20260322",
     "vllm": "0.18.0",
     "vllm-ascend": "0.18.0",
     "transformers": "5.5.0",
@@ -33,7 +33,8 @@ LOCK_FILES = (
 )
 
 # vLLM 0.18 was published with CUDA/PyTorch-2.10 metadata.  The official
-# vLLM-Ascend 0.18 CANN-9.0 matrix deliberately replaces these dependencies.
+# The vLLM-Ascend 0.18 Atlas A2 matrix deliberately replaces these generic
+# CUDA/plugin metadata dependencies.
 # Only these owner/dependency pairs may be ignored; every other pip-check
 # failure remains fatal.
 ALLOWED_METADATA_DIVERGENCES = {
@@ -102,8 +103,8 @@ def check_version(distribution: str, expected: str) -> bool:
         return False
     # PyTorch CPU/base wheels may add a local suffix such as "+cpu" while
     # remaining ABI-compatible with torch_npu's required public version.
-    public_actual = actual.split("+", maxsplit=1)[0]
-    if public_actual != expected:
+    comparison_actual = actual if "+" in expected else actual.split("+", maxsplit=1)[0]
+    if comparison_actual != expected:
         fail(f"{distribution} version is {actual}; expected exactly {expected}")
         return False
     ok(f"{distribution}=={actual}")
@@ -204,7 +205,7 @@ def check_vllm_ascend_registration() -> bool:
 
 
 def check_metadata_consistency() -> bool:
-    """Run pip check while accepting only documented CANN-9.0 divergences."""
+    """Run pip check while accepting only documented accelerator divergences."""
     result = subprocess.run(
         [sys.executable, "-m", "pip", "check"],
         capture_output=True,
@@ -232,7 +233,7 @@ def check_metadata_consistency() -> bool:
         owner = match.group("owner").lower().replace("_", "-")
         dependency = match.group("dependency").lower().replace("_", "-")
         if dependency in ALLOWED_METADATA_DIVERGENCES.get(owner, set()):
-            ok(f"documented CANN-9.0 metadata override: {owner} -> {dependency}")
+            ok(f"documented Ascend metadata override: {owner} -> {dependency}")
         else:
             fail(f"unexpected dependency conflict: {line}")
             success = False
@@ -338,6 +339,7 @@ def check_static(project_root: Path) -> bool:
         "requirements-ascend-plugins.txt",
         "scripts/ascend_env.sh",
         "scripts/install_ascend.sh",
+        "scripts/check_ascend_assets.py",
         "scripts/prepare_data.py",
         "scripts/bootstrap_vision_opd_ascend.sh",
         "scripts/start_vision_opd_ascend.sh",
@@ -380,7 +382,11 @@ def check_static(project_root: Path) -> bool:
         if re.search(rf"(?m)^{re.escape(distribution)}(?:==|>=|<=|~=)", requirements):
             fail(f"requirements-ascend.txt includes CUDA-only package: {distribution}")
             success = False
-    forbidden_sources = ("download.pytorch.org", "/whl/cpu")
+    forbidden_sources = (
+        "download.pytorch.org",
+        "mirrors.huaweicloud.com/ascend/repos/pypi",
+        "/whl/cpu",
+    )
     for forbidden_source in forbidden_sources:
         if forbidden_source in requirements:
             fail(f"Ascend locks contain unreachable or CUDA-oriented source: {forbidden_source}")
@@ -407,6 +413,7 @@ def check_static(project_root: Path) -> bool:
         "MA_NUM_HOSTS",
         "VOPD_TRAIN_FILE",
         "VOPD_CACHE_DIR",
+        "check_ascend_assets.py",
         "check_ascend_env.py",
         "run_vision_opd_ascend.sh",
     ]
@@ -441,6 +448,8 @@ def check_static(project_root: Path) -> bool:
         "-m venv",
         "-m pip install",
         "--constraint",
+        "--dry-run",
+        "check_ascend_assets.py",
         "--only-binary=:all:",
         "--no-deps",
         '--editable "$PROJECT_ROOT"',
@@ -512,6 +521,8 @@ def check_static(project_root: Path) -> bool:
     env_template = (project_root / "vision_opd_ascend.env").read_text(encoding="utf-8")
     for variable in (
         "VOPD_MODEL_PATH",
+        "VOPD_REQUIRE_LOCAL_MODEL",
+        "VOPD_HF_OFFLINE",
         "VOPD_TRAIN_FILE",
         "VOPD_OUTPUT_DIR",
         "VOPD_LR",
@@ -525,6 +536,14 @@ def check_static(project_root: Path) -> bool:
         "VOPD_ASCEND_CORE_REQUIREMENTS",
         "VOPD_ASCEND_PLUGIN_REQUIREMENTS",
         "VOPD_BOOTSTRAP_PYTHON",
+        "VOPD_LOCAL_WHEEL_DIR",
+        "VOPD_PIP_INDEX_URL",
+        "VOPD_PIP_EXTRA_INDEX_URL",
+        "VOPD_PIP_TRUSTED_HOST",
+        "VOPD_PIP_CONFIG_FILE",
+        "VOPD_PIP_NO_INDEX",
+        "VOPD_EXPECTED_CANN_VERSION",
+        "VOPD_REQUIRE_CANN_VERSION_MATCH",
         "CANN_ENV_SCRIPT",
         "NNAL_ENV_SCRIPT",
         "ASDSIP_ENV_SCRIPT",
@@ -532,6 +551,16 @@ def check_static(project_root: Path) -> bool:
     ):
         if variable not in env_template:
             fail(f"Ascend lifecycle configuration is missing: {variable}")
+            success = False
+    offline_defaults = (
+        'VOPD_PIP_NO_INDEX="${VOPD_PIP_NO_INDEX:-1}"',
+        'VOPD_HF_OFFLINE="${VOPD_HF_OFFLINE:-1}"',
+        'VOPD_REQUIRE_LOCAL_MODEL="${VOPD_REQUIRE_LOCAL_MODEL:-1}"',
+        'VOPD_EXPECTED_CANN_VERSION="${VOPD_EXPECTED_CANN_VERSION:-8.5.1}"',
+    )
+    for default in offline_defaults:
+        if default not in env_template:
+            fail(f"Ascend production default is not locked: {default}")
             success = False
     npu_patch = (project_root / "verl/models/transformers/npu_patch.py").read_text(encoding="utf-8")
     if "_disable_qwen3_5_cuda_fast_path" not in npu_patch:
@@ -562,8 +591,8 @@ def check_runtime(project_root: Path, min_npus: int) -> bool:
     success = check_vllm_ascend_registration() and success
     success = check_metadata_consistency() and success
     success = check_lifecycle_config(min_npus) and success
-    if not ((3, 10) <= sys.version_info[:2] < (3, 12)):
-        fail(f"Python {platform.python_version()} is unsupported; use Python 3.10 or 3.11")
+    if sys.version_info[:2] != (3, 10):
+        fail(f"Python {platform.python_version()} is unsupported; use the pinned Python 3.10 worker")
         success = False
     else:
         ok(f"Python {platform.python_version()}")
@@ -573,6 +602,14 @@ def check_runtime(project_root: Path, min_npus: int) -> bool:
         success = False
     else:
         ok(f"ASCEND_HOME_PATH={os.environ['ASCEND_HOME_PATH']}")
+
+    expected_cann = os.environ.get("VOPD_EXPECTED_CANN_VERSION", "8.5.1")
+    detected_cann = os.environ.get("VOPD_DETECTED_CANN_VERSION")
+    if detected_cann != expected_cann:
+        fail(f"CANN version is {detected_cann or 'unknown'}; expected exactly {expected_cann}")
+        success = False
+    else:
+        ok(f"CANN {detected_cann}")
 
     try:
         torch = importlib.import_module("torch")

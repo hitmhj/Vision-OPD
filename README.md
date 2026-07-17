@@ -51,16 +51,29 @@ bash scripts/start_vision_opd_ascend.sh
 ```
 
 The entry exports the configuration as real environment variables and performs
-the complete lifecycle: choose Python 3.10/3.11 on the NPU worker, create or
-reuse `.venv-ascend`, install the coherent CANN 9.0/vLLM-Ascend 0.18 Python
+the complete lifecycle: choose Python 3.10 on the aarch64 NPU worker, create or
+reuse `.venv-ascend`, install the official CANN 8.5.1/vLLM-Ascend 0.18 Python
 stack, load CANN/NNAL, prepare data, preflight, train, save checkpoints, and
 optionally merge the latest checkpoint. ModelArts-injected `VOPD_*` values take
 precedence over file defaults.
 
-Installation is split into a CANN-9.0 binary lock, a generic runtime lock and
-the vLLM hardware-plugin lock. This prevents pip's CUDA/PyTorch-2.10 metadata
-from replacing torch 2.9/torch-npu 2.9.0.post2. It uses the platform's PyPI
-mirror and Huawei Ascend index only; `download.pytorch.org` is not contacted.
+Installation is split into the official binary lock, a generic runtime lock and
+the vLLM hardware-plugin lock. The fixed unit is CANN 8.5.1, torch 2.9.0,
+`torch-npu==2.9.0.post1+git4c901a4`,
+`triton-ascend==3.2.0.dev20260322`, and vLLM/vLLM-Ascend 0.18.0.
+
+Production installation is fully offline by default and uses
+`--no-index --find-links`. Put the complete Python 3.10/aarch64 wheelhouse in
+the project-relative `whls` directory, or set `VOPD_LOCAL_WHEEL_DIR` to its
+mounted location. The launcher validates direct wheels and pip resolves the
+complete environment with `--dry-run` before installing the NPU/runtime stack.
+
+The production entry also defaults to Hugging Face offline mode. Mount the
+model weights under `models/Qwen3.5-4B`, or set `VOPD_MODEL_PATH` to another
+local directory.
+With `VOPD_REQUIRE_LOCAL_MODEL=1` and `VOPD_HF_OFFLINE=1` (the defaults), a
+missing model or dataset fails immediately instead of attempting an external
+download.
 
 Every Vision-OPD command derives `PROJECT_ROOT` from its launcher location, so
 the complete repository can be mounted at any path. The vendor environment

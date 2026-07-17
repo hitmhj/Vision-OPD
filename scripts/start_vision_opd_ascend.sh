@@ -23,6 +23,53 @@ set -a
 source "$VOPD_CONFIG_FILE"
 set +a
 
+# Resolve every user-facing relative path against the repository, not against
+# the algorithm directory from which ModelArts invoked this script.
+_vopd_resolve_project_variable() {
+    local variable_name="$1"
+    local variable_value="${!variable_name:-}"
+    if [[ -n "$variable_value" && "$variable_value" != /* ]]; then
+        printf -v "$variable_name" '%s' "${PROJECT_ROOT}/${variable_value}"
+        export "$variable_name"
+    fi
+}
+for _vopd_path_variable in \
+    VOPD_DATA_DIR VOPD_TRAIN_FILE VOPD_OUTPUT_DIR \
+    VOPD_ROLLOUT_DIR VOPD_LOG_DIR VOPD_MERGED_MODEL_DIR VOPD_CACHE_DIR \
+    HF_HOME HF_DATASETS_CACHE VLLM_CACHE_ROOT TORCH_HOME PIP_CACHE_DIR; do
+    _vopd_resolve_project_variable "$_vopd_path_variable"
+done
+if [[ "${VOPD_REQUIRE_LOCAL_MODEL:-1}" == "1" ]]; then
+    _vopd_resolve_project_variable VOPD_MODEL_PATH
+fi
+
+# Production tasks normally cannot reach Hugging Face. Fail before a long
+# dependency installation when the required local model mount is absent.
+if [[ "${VOPD_HF_OFFLINE:-1}" == "1" ]]; then
+    export HF_HUB_OFFLINE=1
+    export TRANSFORMERS_OFFLINE=1
+    export HF_DATASETS_OFFLINE=1
+fi
+if [[ "${VOPD_REQUIRE_LOCAL_MODEL:-1}" == "1" && ! -d "$VOPD_MODEL_PATH" ]]; then
+    echo "Local model directory does not exist: $VOPD_MODEL_PATH" >&2
+    echo "Mount Qwen3.5-4B and inject VOPD_MODEL_PATH=/path/to/model." >&2
+    echo "The production entry does not download model weights from Hugging Face." >&2
+    exit 2
+fi
+if [[ "${VOPD_REQUIRE_LOCAL_MODEL:-1}" == "1" ]]; then
+    _vopd_asset_python="${VOPD_BOOTSTRAP_PYTHON:-}"
+    if [[ -z "$_vopd_asset_python" ]]; then
+        _vopd_asset_python="$(command -v python3.10 || command -v python3 || true)"
+    fi
+    if [[ -z "$_vopd_asset_python" || ! -x "$_vopd_asset_python" ]]; then
+        echo "Python is unavailable for the local model integrity check." >&2
+        exit 2
+    fi
+    "$_vopd_asset_python" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
+        --project-root "$PROJECT_ROOT" \
+        --model-dir "$VOPD_MODEL_PATH"
+fi
+
 # ModelArts can invoke a rank-table boot file once per NPU. Only global rank 0
 # owns this orchestration lifecycle; the verl driver later creates Ray workers.
 if [[ "${VOPD_SINGLE_DRIVER_GUARD:-1}" == "1" ]]; then
@@ -92,7 +139,7 @@ fi
 for _vopd_vendor_script in "$CANN_ENV_SCRIPT" "$NNAL_ENV_SCRIPT"; do
     if [[ ! -f "$_vopd_vendor_script" ]]; then
         echo "Configured Ascend runtime script does not exist: $_vopd_vendor_script" >&2
-        echo "Select a CANN/NNAL 9.0 task image or inject the corresponding script path." >&2
+        echo "Select the CANN 8.5.1/compatible NNAL task image or inject the corresponding script path." >&2
         exit 2
     fi
 done
@@ -149,6 +196,10 @@ if [[ ! -f "$VOPD_TRAIN_FILE" ]]; then
         if [[ -f "$VOPD_DATA_DIR/train.jsonl" ]]; then
             _vopd_log "Local train.jsonl found; extracting mounted archives without downloading the dataset."
             _vopd_prepare_args+=(--skip-download)
+        elif [[ "${VOPD_HF_OFFLINE:-1}" == "1" ]]; then
+            echo "Neither $VOPD_TRAIN_FILE nor $VOPD_DATA_DIR/train.jsonl exists." >&2
+            echo "Hugging Face access is disabled by VOPD_HF_OFFLINE=1; mount the prepared dataset." >&2
+            exit 1
         else
             _vopd_log "Local train.jsonl is absent; downloading and preparing Vision-OPD-6K."
         fi

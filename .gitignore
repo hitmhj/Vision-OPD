@@ -40,3 +40,8 @@ dist/
 # Codex workspace metadata
 .agents/
 .codex/
+# ModelArts offline assets are mounted with the dataset, never committed.
+whls/*
+!whls/README.md
+models/*
+!models/README.md

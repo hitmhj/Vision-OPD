@@ -11,6 +11,9 @@ fi
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODEL_PATH="$1"
 shift
+if [[ "$MODEL_PATH" != /* ]]; then
+    MODEL_PATH="${PROJECT_ROOT}/${MODEL_PATH}"
+fi
 
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-8}"
 export TRAINER_N_GPUS_PER_NODE="${TRAINER_N_GPUS_PER_NODE:-$TENSOR_PARALLEL_SIZE}"
@@ -39,6 +42,14 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
 fi
 export PATH="$(dirname "$PYTHON_BIN"):${PATH}"
 VLLM_BIN="${VLLM_BIN:-$(dirname "$PYTHON_BIN")/vllm}"
+
+if [[ "${VOPD_HF_OFFLINE:-1}" == "1" ]]; then
+    export HF_HUB_OFFLINE=1
+    export TRANSFORMERS_OFFLINE=1
+fi
+"$PYTHON_BIN" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
+    --project-root "$PROJECT_ROOT" \
+    --model-dir "$MODEL_PATH"
 
 if [[ "${VOPD_ASCEND_ENV_READY:-0}" != "1" ]]; then
     # shellcheck source=ascend_env.sh

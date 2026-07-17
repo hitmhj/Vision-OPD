@@ -39,7 +39,7 @@ for _vopd_lock_file in "$REQUIREMENTS_FILE" "$CORE_REQUIREMENTS_FILE" "$PLUGIN_R
 done
 
 _vopd_python_supported() {
-    "$1" -c 'import sys; raise SystemExit(0 if (3, 10) <= sys.version_info[:2] < (3, 12) else 1)' \
+    "$1" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 10) else 1)' \
         >/dev/null 2>&1
 }
 
@@ -47,14 +47,14 @@ _vopd_select_bootstrap_python() {
     local candidate
     if [[ -n "${VOPD_BOOTSTRAP_PYTHON:-}" ]]; then
         if [[ ! -x "$VOPD_BOOTSTRAP_PYTHON" ]] || ! _vopd_python_supported "$VOPD_BOOTSTRAP_PYTHON"; then
-            echo "VOPD_BOOTSTRAP_PYTHON must be an executable Python 3.10 or 3.11: $VOPD_BOOTSTRAP_PYTHON" >&2
+            echo "VOPD_BOOTSTRAP_PYTHON must be an executable Python 3.10: $VOPD_BOOTSTRAP_PYTHON" >&2
             return 1
         fi
         printf '%s\n' "$VOPD_BOOTSTRAP_PYTHON"
         return 0
     fi
 
-    for candidate in python3.11 python3.10 python3 python; do
+    for candidate in python3.10 python3 python; do
         if command -v "$candidate" >/dev/null 2>&1 && _vopd_python_supported "$candidate"; then
             command -v "$candidate"
             return 0
@@ -62,19 +62,17 @@ _vopd_select_bootstrap_python() {
     done
 
     echo "No supported Python was found on the NPU worker." >&2
-    echo "Use a ModelArts image with Python 3.10/3.11, or inject VOPD_BOOTSTRAP_PYTHON." >&2
+    echo "Use the ModelArts Python 3.10 worker environment, or inject VOPD_BOOTSTRAP_PYTHON." >&2
     return 1
 }
 
 BOOTSTRAP_PYTHON="$(_vopd_select_bootstrap_python)"
 MACHINE="$(uname -m)"
-case "$MACHINE" in
-    x86_64|aarch64) ;;
-    *)
-        echo "Unsupported worker architecture: $MACHINE (expected x86_64 or aarch64)" >&2
-        exit 2
-        ;;
-esac
+if [[ "$MACHINE" != "aarch64" ]]; then
+    echo "Unsupported training worker architecture: $MACHINE (expected aarch64 for Atlas 910B)." >&2
+    echo "Do not build the NPU environment in the x86_64 WebStudio session." >&2
+    exit 2
+fi
 
 echo "Vision-OPD dependency target"
 echo "  worker_arch:      $MACHINE"
@@ -108,7 +106,7 @@ for name in sys.argv[1:]:
     digest.update(b"\0")
 print(digest.hexdigest())
 ' "$REQUIREMENTS_FILE" "$CORE_REQUIREMENTS_FILE" "$PLUGIN_REQUIREMENTS_FILE" "$0")"
-INSTALL_FINGERPRINT="schema=4;requirements=${REQUIREMENTS_SHA};python=$($BOOTSTRAP_PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")');arch=${MACHINE}"
+INSTALL_FINGERPRINT="schema=5;requirements=${REQUIREMENTS_SHA};python=$($BOOTSTRAP_PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")');arch=${MACHINE}"
 MARKER_FILE="$VENV_DIR/.vision_opd_requirements.sha256"
 if [[ "$INSTALL_MODE" == "auto" && -x "$VENV_DIR/bin/python" && -f "$MARKER_FILE" ]]; then
     if [[ "$(<"$MARKER_FILE")" == "$INSTALL_FINGERPRINT" ]]; then
@@ -142,6 +140,10 @@ PIP_ARGS=(
     --timeout "${VOPD_PIP_TIMEOUT:-120}"
     --retries "${VOPD_PIP_RETRIES:-5}"
 )
+# Do not inherit a base image's pip extra-index/find-links settings. All package
+# sources for this lifecycle are declared explicitly below.
+export PIP_CONFIG_FILE="${VOPD_PIP_CONFIG_FILE:-/dev/null}"
+unset PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX
 if [[ "${VOPD_PIP_NO_INDEX:-0}" == "1" ]]; then
     PIP_ARGS+=(--no-index)
     if [[ -z "${VOPD_LOCAL_WHEEL_DIR:-}" ]]; then
@@ -149,8 +151,14 @@ if [[ "${VOPD_PIP_NO_INDEX:-0}" == "1" ]]; then
         exit 2
     fi
 fi
-if [[ -n "${VOPD_PIP_INDEX_URL:-}" ]]; then
+if [[ "${VOPD_PIP_NO_INDEX:-0}" != "1" && -n "${VOPD_PIP_INDEX_URL:-}" ]]; then
     PIP_ARGS+=(--index-url "$VOPD_PIP_INDEX_URL")
+fi
+if [[ "${VOPD_PIP_NO_INDEX:-0}" != "1" && -n "${VOPD_PIP_EXTRA_INDEX_URL:-}" ]]; then
+    PIP_ARGS+=(--extra-index-url "$VOPD_PIP_EXTRA_INDEX_URL")
+fi
+if [[ -n "${VOPD_PIP_TRUSTED_HOST:-}" ]]; then
+    PIP_ARGS+=(--trusted-host "$VOPD_PIP_TRUSTED_HOST")
 fi
 if [[ -n "${VOPD_LOCAL_WHEEL_DIR:-}" ]]; then
     LOCAL_WHEEL_DIR="$(_vopd_resolve_path "$VOPD_LOCAL_WHEEL_DIR")"
@@ -162,12 +170,36 @@ if [[ -n "${VOPD_LOCAL_WHEEL_DIR:-}" ]]; then
 fi
 
 if [[ "${VOPD_PIP_NO_INDEX:-0}" == "1" ]]; then
-    "$RUNTIME_PYTHON" -m pip --version
-else
-    "$RUNTIME_PYTHON" -m pip install "${PIP_ARGS[@]}" --upgrade "pip>=23.3,<26" setuptools wheel
+    "$BOOTSTRAP_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
+        --project-root "$PROJECT_ROOT" \
+        --wheel-dir "$LOCAL_WHEEL_DIR"
 fi
 
-echo "[install 1/4] Installing the CANN 9.0 / PyTorch 2.9 binary compatibility unit..."
+# Upgrade the isolated installer from the declared source as well. In offline
+# mode pip/setuptools/wheel must therefore be present in the wheelhouse.
+"$RUNTIME_PYTHON" -m pip install \
+    "${PIP_ARGS[@]}" \
+    --upgrade \
+    "pip>=23.3,<26" setuptools wheel
+
+# Resolve the clean environment before mutating its NPU stack. This catches an
+# incomplete offline wheelhouse at the beginning of the task rather than after
+# half of the packages have been installed. Hardware plugins are intentionally
+# excluded because they are installed --no-deps below.
+echo "[install 0/4] Resolving the complete worker environment without installation..."
+"$RUNTIME_PYTHON" -m pip install \
+    "${PIP_ARGS[@]}" \
+    --dry-run \
+    --ignore-installed \
+    --constraint "$CORE_REQUIREMENTS_FILE" \
+    -r "$CORE_REQUIREMENTS_FILE" \
+    -r "$REQUIREMENTS_FILE"
+
+echo "[install 1/4] Installing the official CANN 8.5.1 / PyTorch 2.9 compatibility unit..."
+echo "  primary_index:    ${VOPD_PIP_INDEX_URL:-pip default}"
+echo "  extra_index:      ${VOPD_PIP_EXTRA_INDEX_URL:-disabled}"
+echo "  local_wheels:     ${VOPD_LOCAL_WHEEL_DIR:-disabled}"
+echo "  pip_config:       $PIP_CONFIG_FILE"
 "$RUNTIME_PYTHON" -m pip install \
     "${PIP_ARGS[@]}" \
     --upgrade \
@@ -183,10 +215,11 @@ echo "[install 2/4] Installing Vision-OPD and generic inference dependencies..."
     -r "$REQUIREMENTS_FILE"
 
 echo "[install 3/4] Installing prebuilt vLLM and vLLM-Ascend wheels..."
-# vLLM 0.18's wheel metadata describes its CUDA/PyTorch-2.10 build, while the
-# official Ascend 0.18 CANN-9.0 matrix uses PyTorch 2.9 and torch-npu post2.
+# vLLM 0.18's wheel metadata describes its CUDA/PyTorch dependency set, while
+# the official Ascend 0.18 Atlas A2 matrix uses the special torch-npu build in
+# requirements-ascend-core.txt.
 # Installing only these two wheel payloads after their complete curated runtime
-# prevents pip from replacing the working NPU ABI with CUDA or CANN-8.5 pins.
+# prevents pip from replacing the working NPU ABI with CUDA or another CANN line.
 _vopd_install_empty_vllm() {
     echo "Building vLLM's hardware-neutral payload (VLLM_TARGET_DEVICE=empty)..."
     # The PyPI source archive avoids a GitHub dependency and also supports
@@ -225,7 +258,7 @@ if "$RUNTIME_PYTHON" -m pip install \
     --no-deps \
     -r "$PLUGIN_REQUIREMENTS_FILE"; then
     if ! _vopd_vllm_importable; then
-        if [[ "${VOPD_VLLM_ALLOW_SOURCE_FALLBACK:-1}" != "1" ]]; then
+        if [[ "${VOPD_VLLM_ALLOW_SOURCE_FALLBACK:-0}" != "1" ]]; then
             echo "The prebuilt vLLM wheel cannot load with the NPU stack and source fallback is disabled." >&2
             exit 1
         fi
@@ -233,8 +266,9 @@ if "$RUNTIME_PYTHON" -m pip install \
         _vopd_install_empty_vllm
     fi
 else
-    if [[ "${VOPD_VLLM_ALLOW_SOURCE_FALLBACK:-1}" != "1" ]]; then
-        echo "Prebuilt vLLM installation failed and source fallback is disabled." >&2
+    if [[ "${VOPD_VLLM_ALLOW_SOURCE_FALLBACK:-0}" != "1" ]]; then
+        echo "Prebuilt vLLM/vLLM-Ascend installation failed and source fallback is disabled." >&2
+        echo "Add compatible cp310/aarch64 wheels to VOPD_LOCAL_WHEEL_DIR." >&2
         exit 1
     fi
     echo "Prebuilt vLLM wheel is incompatible or unavailable; using the source fallback..."
@@ -246,7 +280,7 @@ echo "[install 4/4] Installing the local Vision-OPD package..."
 "$RUNTIME_PYTHON" -m pip install "${PIP_ARGS[@]}" --no-build-isolation --no-deps --editable "$PROJECT_ROOT"
 
 # Validate every direct pin, every import used by the active training path and
-# all dependency metadata except the documented CANN-9.0/plugin divergences.
+# all dependency metadata except the documented accelerator/plugin divergences.
 "$RUNTIME_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_env.py" --dependencies-only
 printf '%s\n' "$INSTALL_FINGERPRINT" > "$MARKER_FILE"
 
