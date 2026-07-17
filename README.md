@@ -40,9 +40,10 @@ pip install causal-conv1d==1.6.1 --no-build-isolation
 
 #### Ascend 910B / Atlas A2
 
-The Ascend path is separate from the CUDA requirements above. It reuses the
-provided Huawei initializer, CANN 8.5.1, NNAL/ATB and ASDSIP environment from
-the platform example. Configure paths, lifecycle switches and hyperparameters in
+The Ascend path is separate from the CUDA requirements above. Dependency
+installation runs on the real NPU worker, so the WebStudio CPU architecture and
+Python version do not affect wheel selection. Configure CANN/NNAL paths,
+lifecycle switches and hyperparameters in
 [`vision_opd_ascend.env`](vision_opd_ascend.env), then use one entry:
 
 ```bash
@@ -50,16 +51,16 @@ bash scripts/start_vision_opd_ascend.sh
 ```
 
 The entry exports the configuration as real environment variables and performs
-the complete lifecycle: call the Huawei-provided dependency initializer through
-the project-relative `scripts/install_ascend.sh`, load the Ascend runtime,
-reuse/prepare data, preflight, train, save checkpoints, and optionally merge the
-latest checkpoint. The sample LLaMA-Factory training command is not used.
-ModelArts-injected `VOPD_*` values take precedence over file defaults.
+the complete lifecycle: choose Python 3.10/3.11 on the NPU worker, create or
+reuse `.venv-ascend`, install the coherent CANN 9.0/vLLM-Ascend 0.18 Python
+stack, load CANN/NNAL, prepare data, preflight, train, save checkpoints, and
+optionally merge the latest checkpoint. ModelArts-injected `VOPD_*` values take
+precedence over file defaults.
 
-The installer temporarily enters the external Huawei setup directory and then
-returns with `popd`. Every Vision-OPD command derives `PROJECT_ROOT` from its
-launcher location, so the complete repository can be mounted at any path. The
-vendor environment scripts run without Bash nounset, matching the sample.
+Every Vision-OPD command derives `PROJECT_ROOT` from its launcher location, so
+the complete repository can be mounted at any path. The vendor environment
+scripts run without Bash nounset and `ZSH_VERSION` is defined before ATB is
+loaded.
 
 ### 2. Prepare Training Data
 

@@ -18,6 +18,11 @@ fi
 # restoring it before a nested vendor source completes recreates the failure.
 set +u
 
+# Some Huawei NNAL releases read ZSH_VERSION directly even while running under
+# Bash. Defining it is stronger than relying on nounset being disabled and also
+# protects us if a nested vendor script enables nounset internally.
+export ZSH_VERSION="${ZSH_VERSION-}"
+
 if [[ -z "${CANN_ENV_SCRIPT:-}" || ! -f "$CANN_ENV_SCRIPT" ]]; then
     echo "Configured CANN environment script does not exist: ${CANN_ENV_SCRIPT:-unset}" >&2
     return 1
@@ -26,9 +31,11 @@ if [[ -z "${NNAL_ENV_SCRIPT:-}" || ! -f "$NNAL_ENV_SCRIPT" ]]; then
     echo "Configured NNAL/ATB environment script does not exist: ${NNAL_ENV_SCRIPT:-unset}" >&2
     return 1
 fi
-if [[ -z "${ASDSIP_ENV_SCRIPT:-}" || ! -f "$ASDSIP_ENV_SCRIPT" ]]; then
-    echo "Configured ASDSIP environment script does not exist: ${ASDSIP_ENV_SCRIPT:-unset}" >&2
-    return 1
+if [[ "${VOPD_REQUIRE_ASDSIP:-0}" == "1" ]]; then
+    if [[ -z "${ASDSIP_ENV_SCRIPT:-}" || ! -f "$ASDSIP_ENV_SCRIPT" ]]; then
+        echo "Required ASDSIP environment script does not exist: ${ASDSIP_ENV_SCRIPT:-unset}" >&2
+        return 1
+    fi
 fi
 
 # These are the three active source commands from prompt.txt. There is
@@ -36,10 +43,17 @@ fi
 # and NNAL versions and was the path that triggered the ZSH_VERSION failure.
 # shellcheck disable=SC1090
 source "$CANN_ENV_SCRIPT"
+set +u
 # shellcheck disable=SC1090
 source "$NNAL_ENV_SCRIPT" --cxx_abi=0
-# shellcheck disable=SC1090
-source "$ASDSIP_ENV_SCRIPT"
+set +u
+if [[ -n "${ASDSIP_ENV_SCRIPT:-}" && -f "$ASDSIP_ENV_SCRIPT" ]]; then
+    # shellcheck disable=SC1090
+    source "$ASDSIP_ENV_SCRIPT"
+    set +u
+else
+    echo "ASDSIP environment script not found; optional component skipped."
+fi
 
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export ASCEND_SLOG_PRINT_TO_STDOUT=0

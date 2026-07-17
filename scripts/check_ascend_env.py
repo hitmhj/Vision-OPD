@@ -16,6 +16,7 @@ from pathlib import Path
 
 EXPECTED_VERSIONS = {
     "torch": "2.9.0",
+    "torchvision": "0.24.0",
     "torch-npu": "2.9.0.post2",
     "torchdata": "0.11.0",
     "triton-ascend": "3.2.1",
@@ -29,18 +30,24 @@ CUDA_ONLY_QWEN_FAST_PATHS = (
     "flash-linear-attention",
 )
 
-PROVIDED_ENV_IMPORTS = {
+RUNTIME_IMPORTS = {
     "accelerate": "accelerate",
+    "codetiming": "codetiming",
     "datasets": "datasets",
     "hydra-core": "hydra",
     "omegaconf": "omegaconf",
     "peft": "peft",
+    "Pillow": "PIL",
+    "pyarrow": "pyarrow",
+    "pyzmq": "zmq",
+    "qwen-vl-utils": "qwen_vl_utils",
     "ray": "ray",
     "safetensors": "safetensors",
     "tensordict": "tensordict",
     "torch": "torch",
     "torch-npu": "torch_npu",
     "torchdata": "torchdata",
+    "torchvision": "torchvision",
     "transformers": "transformers",
     "vllm": "vllm",
     "vllm-ascend": "vllm_ascend",
@@ -101,21 +108,17 @@ def check_declared_dependencies(project_root: Path) -> bool:
     return success
 
 
-def check_provided_environment() -> bool:
-    """Check the environment created by the provided Huawei initializer."""
+def check_runtime_imports() -> bool:
+    """Import the packages used by the active Vision-OPD training path."""
     success = True
-    for distribution, module_name in PROVIDED_ENV_IMPORTS.items():
+    for distribution, module_name in RUNTIME_IMPORTS.items():
         try:
             importlib.import_module(module_name)
             version = importlib.metadata.version(distribution)
-            ok(f"provided environment: {distribution}=={version}")
+            ok(f"runtime import: {distribution}=={version}")
         except Exception as exc:
-            fail(f"provided environment cannot import {distribution}: {exc}")
+            fail(f"runtime cannot import {distribution}: {exc}")
             success = False
-
-    if os.environ.get("VOPD_INSTALL_SAMPLE_ACCELERATE", "1") == "1":
-        expected = os.environ.get("VOPD_SAMPLE_ACCELERATE_VERSION", "1.11.0")
-        success = check_version("accelerate", expected) and success
     return success
 
 
@@ -186,6 +189,14 @@ def check_lifecycle_config(min_npus: int) -> bool:
         if resume_path == "null" or not Path(resume_path).is_dir():
             fail("VOPD_RESUME_FROM_PATH must be an existing checkpoint directory")
             success = False
+
+    rollout_engine = os.environ.get("VOPD_ROLLOUT_ENGINE", "vllm")
+    if rollout_engine != "vllm":
+        fail(
+            f"VOPD_ROLLOUT_ENGINE={rollout_engine!r} is unavailable in the Ascend lock; "
+            "use 'vllm'"
+        )
+        success = False
 
     try:
         memory_utilization = float(os.environ.get("VOPD_ROLLOUT_MEMORY_UTILIZATION", "0.5"))
@@ -286,17 +297,17 @@ def check_static(project_root: Path) -> bool:
             fail(f"unified Ascend lifecycle is missing stage: {stage}")
             success = False
     dependency_installer = (project_root / "scripts/install_ascend.sh").read_text(encoding="utf-8")
-    for stage in ("VOPD_DEPENDENCY_SETUP_DIR", "VOPD_DEPENDENCY_SETUP_SCRIPT", "VOPD_SAMPLE_ACCELERATE_VERSION"):
+    for stage in ("VOPD_VENV_DIR", "VOPD_ASCEND_REQUIREMENTS", "VOPD_BOOTSTRAP_PYTHON"):
         if stage not in dependency_installer:
-            fail(f"provided dependency installer is missing: {stage}")
+            fail(f"NPU-worker dependency installer is missing: {stage}")
             success = False
-    for forbidden in ("requirements-ascend.txt", "pip install -e"):
+    for forbidden in ("VOPD_DEPENDENCY_SETUP_DIR", "VOPD_DEPENDENCY_SETUP_SCRIPT", "init_env_qwen"):
         if forbidden in dependency_installer:
-            fail(f"dependency installer must delegate to the provided Huawei script, found: {forbidden}")
+            fail(f"dependency installer still depends on the LLaMAFactory sample: {forbidden}")
             success = False
-    for required in ('pushd "$SETUP_DIR"', 'bash "$SETUP_SCRIPT"', 'pip install "accelerate==', "popd"):
+    for required in ("requirements-ascend.txt", "-m venv", "-m pip install", '--editable "$PROJECT_ROOT"', "-m pip check"):
         if required not in dependency_installer:
-            fail(f"dependency installer diverges from the provided sample: {required}")
+            fail(f"dependency installer is missing lifecycle operation: {required}")
             success = False
 
     runtime_loader = (project_root / "scripts/ascend_env.sh").read_text(encoding="utf-8")
@@ -366,13 +377,16 @@ def check_static(project_root: Path) -> bool:
         "VOPD_LR",
         "VOPD_TOTAL_TRAINING_STEPS",
         "VOPD_MAX_TOKENS_PER_NPU",
+        "VOPD_ROLLOUT_ENGINE",
         "VOPD_RESUME_MODE",
         "VOPD_INSTALL_MODE",
-        "VOPD_DEPENDENCY_SETUP_DIR",
-        "VOPD_DEPENDENCY_SETUP_SCRIPT",
+        "VOPD_VENV_DIR",
+        "VOPD_ASCEND_REQUIREMENTS",
+        "VOPD_BOOTSTRAP_PYTHON",
         "CANN_ENV_SCRIPT",
         "NNAL_ENV_SCRIPT",
         "ASDSIP_ENV_SCRIPT",
+        "VOPD_REQUIRE_ASDSIP",
     ):
         if variable not in env_template:
             fail(f"Ascend lifecycle configuration is missing: {variable}")
@@ -397,9 +411,11 @@ def check_static(project_root: Path) -> bool:
 
 
 def check_runtime(project_root: Path, min_npus: int) -> bool:
-    # The platform initializer owns package resolution. Validate imports and
-    # report its actual versions instead of imposing requirements-ascend.txt.
-    success = check_provided_environment()
+    # The lock file and isolated venv are owned by this repository. Check the
+    # full lock before importing binary modules so mixed base-image packages
+    # cannot silently leak into the training process.
+    success = check_declared_dependencies(project_root)
+    success = check_runtime_imports() and success
     success = check_lifecycle_config(min_npus) and success
     if not ((3, 10) <= sys.version_info[:2] < (3, 12)):
         fail(f"Python {platform.python_version()} is unsupported; use Python 3.10 or 3.11")

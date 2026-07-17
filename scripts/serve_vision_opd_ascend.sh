@@ -9,8 +9,6 @@ if [[ $# -lt 1 ]]; then
 fi
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
-VLLM_BIN="${VLLM_BIN:-vllm}"
 MODEL_PATH="$1"
 shift
 
@@ -26,6 +24,21 @@ set -a
 # shellcheck disable=SC1090
 source "$VOPD_CONFIG_FILE"
 set +a
+
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+    if [[ "$VOPD_VENV_DIR" == /* ]]; then
+        PYTHON_BIN="${VOPD_VENV_DIR}/bin/python"
+    else
+        PYTHON_BIN="${PROJECT_ROOT}/${VOPD_VENV_DIR}/bin/python"
+    fi
+fi
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "Vision-OPD runtime Python does not exist: $PYTHON_BIN" >&2
+    echo "Run bash scripts/start_vision_opd_ascend.sh first." >&2
+    exit 2
+fi
+export PATH="$(dirname "$PYTHON_BIN"):${PATH}"
+VLLM_BIN="${VLLM_BIN:-$(dirname "$PYTHON_BIN")/vllm}"
 
 if [[ "${VOPD_ASCEND_ENV_READY:-0}" != "1" ]]; then
     # shellcheck source=ascend_env.sh

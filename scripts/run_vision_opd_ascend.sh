@@ -5,7 +5,6 @@ set +u
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
 VOPD_CONFIG_FILE="${VOPD_CONFIG_FILE:-${PROJECT_ROOT}/vision_opd_ascend.env}"
 if [[ ! -f "$VOPD_CONFIG_FILE" ]]; then
     echo "Vision-OPD config file does not exist: $VOPD_CONFIG_FILE" >&2
@@ -15,6 +14,20 @@ set -a
 # shellcheck disable=SC1090
 source "$VOPD_CONFIG_FILE"
 set +a
+
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+    if [[ "$VOPD_VENV_DIR" == /* ]]; then
+        PYTHON_BIN="${VOPD_VENV_DIR}/bin/python"
+    else
+        PYTHON_BIN="${PROJECT_ROOT}/${VOPD_VENV_DIR}/bin/python"
+    fi
+fi
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "Vision-OPD runtime Python does not exist: $PYTHON_BIN" >&2
+    echo "Run bash scripts/start_vision_opd_ascend.sh first." >&2
+    exit 2
+fi
+export PATH="$(dirname "$PYTHON_BIN"):${PATH}"
 
 export TRAINER_N_GPUS_PER_NODE="${VOPD_GPUS_PER_NODE:-${TRAINER_N_GPUS_PER_NODE:-8}}"
 export TRAINER_NNODES="${VOPD_NNODES:-${TRAINER_NNODES:-1}}"

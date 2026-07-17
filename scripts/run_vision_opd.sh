@@ -52,6 +52,7 @@ TRAINER_RESUME_FROM_PATH="${VOPD_RESUME_FROM_PATH:-null}"
 TRAINER_LOGGER="${VOPD_LOGGER:-[\"console\",\"tensorboard\"]}"
 ROLLOUT_AGENT_NUM_WORKERS="${VOPD_ROLLOUT_WORKERS:-${ROLLOUT_AGENT_NUM_WORKERS:-8}}"
 DATA_DATALOADER_NUM_WORKERS="${VOPD_DATALOADER_WORKERS:-${DATA_DATALOADER_NUM_WORKERS:-8}}"
+ROLLOUT_ENGINE="${VOPD_ROLLOUT_ENGINE:-vllm}"
 CUSTOM_CHAT_TEMPLATE_FILE="${VOPD_CHAT_TEMPLATE:-${PROJECT_ROOT}/chat_templates/perception_chat_template_qwen35.jinja}"
 
 SELF_DISTILL_TOPK="${VOPD_DISTILL_TOPK:-100}"
@@ -133,6 +134,7 @@ echo "Teacher model source: $TEACHER_MODEL_SOURCE"
 echo "Teacher regularization: $TEACHER_REGULARIZATION"
 echo "Teacher update rate: $TEACHER_UPDATE_RATE"
 echo "Target device: $TARGET_DEVICE"
+echo "Rollout engine: $ROLLOUT_ENGINE"
 
 "$PYTHON_BIN" -m verl.trainer.main_ppo --config-name "$CONFIG_NAME" \
     data.train_files="[\"$TASK_TRAIN_FILE\"]" \
@@ -180,7 +182,7 @@ echo "Target device: $TARGET_DEVICE"
     actor_rollout_ref.actor.self_distillation.alpha=$ALPHA \
     actor_rollout_ref.actor.self_distillation.include_environment_feedback=False \
     actor_rollout_ref.actor.optim.lr_warmup_steps=$LR_WARMUP_STEPS \
-    actor_rollout_ref.rollout.name=vllm \
+    actor_rollout_ref.rollout.name=$ROLLOUT_ENGINE \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$ROLLOUT_TENSOR_MODEL_PARALLEL_SIZE \
     actor_rollout_ref.rollout.gpu_memory_utilization=$ROLLOUT_GPU_MEMORY_UTILIZATION \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$ROLLOUT_LOGPROB_MICRO_BATCH_SIZE_PER_GPU \

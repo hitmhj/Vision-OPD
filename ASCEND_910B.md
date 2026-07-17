@@ -6,19 +6,23 @@ environment must not be mixed.
 
 ## Platform-provided software environment
 
-The production entry does not install `requirements-ascend.txt`. It delegates
-dependency preparation to the Huawei Qwen3.5 initializer configured by
-`VOPD_DEPENDENCY_SETUP_DIR` and `VOPD_DEPENDENCY_SETUP_SCRIPT`, then applies
-the sample's `accelerate==1.11.0` pin. PyTorch, torch-npu, Transformers, vLLM
-and vLLM-Ascend versions are owned by that initializer and reported by the
-runtime preflight.
+WebStudio is only an editing environment. The production entry selects Python
+and installs dependencies on the actual NPU worker. It accepts Python 3.10 or
+3.11 on either x86_64 or aarch64 and creates an isolated environment at
+`VOPD_VENV_DIR` (default: `.venv-ascend`). `VOPD_INSTALL_MODE=auto` reuses the
+environment when `requirements-ascend.txt` has not changed.
 
-The defaults from the provided platform example load CANN 8.5.1, NNAL/ATB
-with `--cxx_abi=0`, and ASDSIP. These external paths remain overridable through
-`CANN_ENV_SCRIPT`, `NNAL_ENV_SCRIPT`, and `ASDSIP_ENV_SCRIPT`.
-They are sourced in that exact order, without `set -u` and without silently
-falling back to another runtime stack. This matches the working sample because
-the vendor ATB script reads `ZSH_VERSION` without defining it in Bash.
+The binary stack is intentionally coherent: CANN/NNAL 9.0, torch 2.9,
+torch-npu 2.9.0.post2, triton-ascend 3.2.1 and vLLM/vLLM-Ascend 0.18.0. The
+LLaMAFactory sample's CANN 8.5.1/torch 2.10 environment cannot be mixed with
+this vLLM-Ascend release. Common settings from the sample are retained, but its
+TRL, Gradio and DeepSpeed dependencies are not installed.
+
+`CANN_ENV_SCRIPT`, `NNAL_ENV_SCRIPT`, and, when available,
+`ASDSIP_ENV_SCRIPT` are sourced in that order. CANN and ATB are required;
+ASDSIP is optional unless `VOPD_REQUIRE_ASDSIP=1`. Bash nounset is disabled and
+`ZSH_VERSION` is explicitly defined before ATB, covering both forms of the
+vendor-script failure.
 
 Driver, firmware, CANN and NNAL are system components. They must be installed
 by the machine administrator or supplied by the base container before running
@@ -37,27 +41,30 @@ The same entry performs, in order:
 
 1. source the configuration and export `VOPD_*` variables;
 2. call `scripts/install_ascend.sh` by project-relative path; that installer
-   enters the provided Huawei dependency directory, runs its initializer and
-   `accelerate==1.11.0`, then returns with `popd`;
+   selects a worker-side Python, creates/reuses the isolated venv, installs the
+   Ascend lock file and the editable Vision-OPD package, then runs `pip check`;
 3. source the configured CANN, NNAL/ATB and ASDSIP scripts exactly once;
 4. reuse or prepare data according to `VOPD_PREPARE_DATA_IF_MISSING`;
 5. run NPU and configuration preflight checks;
 6. train and save FSDP checkpoints;
 7. optionally merge the latest checkpoint according to `VOPD_AUTO_MERGE`.
 
-All repository commands derive `PROJECT_ROOT` from the startup script location.
-The Vision-OPD folder can therefore be mounted anywhere; only the separately
-mounted Huawei dependency/runtime directories use configured external paths.
+For an offline task, mount a complete wheelhouse for the worker's Python and
+architecture, then set `VOPD_LOCAL_WHEEL_DIR` and `VOPD_PIP_NO_INDEX=1`.
+The earlier LLaMAFactory wheelhouse is not complete for Vision-OPD and cannot
+be used as that directory.
 
-No Vision-OPD training code or LLaMA-Factory training command is executed by
-the dependency installer. Host firmware, driver, CANN and NNAL are supplied by
-the platform environment.
+All repository commands derive `PROJECT_ROOT` from the startup script location.
+The Vision-OPD folder can therefore be mounted anywhere. Host firmware, driver,
+CANN and NNAL remain platform components; Python packages are installed inside
+the project-controlled venv on the worker.
 
 If CANN is installed in a non-standard location:
 
 ```bash
-CANN_ENV_SCRIPT=/opt/Ascend/ascend-toolkit/set_env.sh \
-NNAL_ENV_SCRIPT=/opt/Ascend/nnal/atb/set_env.sh \
+CANN_ENV_SCRIPT=/opt/Ascend/cann-9.0.0/set_env.sh \
+NNAL_ENV_SCRIPT=/opt/Ascend/nnal-9.0.0/atb/set_env.sh \
+ASDSIP_ENV_SCRIPT=/opt/Ascend/nnal-9.0.0/asdsip/set_env.sh \
 bash scripts/start_vision_opd_ascend.sh
 ```
 
@@ -194,8 +201,8 @@ The launchers automatically run:
 python scripts/check_ascend_env.py --min-npus 8
 ```
 
-It reports the actual package versions supplied by the Huawei initializer and
-verifies required imports, CANN environment loading, visible NPU count,
+It checks every exact version from the Ascend lock file and verifies required
+imports, CANN environment loading, visible NPU count,
 torch-npu and vLLM-Ascend, loaded transformer patches, Ray's `NPU` resources,
 `npu-smi`, and a small BF16 forward/backward operation.
 Repository-only validation, which does not require Ascend hardware or

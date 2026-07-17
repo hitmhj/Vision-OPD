@@ -9,7 +9,6 @@ set +u
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
 export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
 VOPD_CONFIG_FILE="${VOPD_CONFIG_FILE:-${PROJECT_ROOT}/vision_opd_ascend.env}"
 
@@ -80,19 +79,46 @@ _vopd_log() {
 
 trap '_vopd_status=$?; _vopd_log "ERROR: lifecycle failed at line ${BASH_LINENO[0]} (exit=${_vopd_status})"; exit "${_vopd_status}"' ERR
 
-_vopd_log "[1/7] Preparing dependencies through the project-relative installer (mode: $VOPD_INSTALL_MODE)..."
-case "$VOPD_INSTALL_MODE" in
-    always)
-        bash "$PROJECT_ROOT/scripts/install_ascend.sh"
-        ;;
-    never)
-        _vopd_log "Skipping dependency setup because VOPD_INSTALL_MODE=never."
-        ;;
-    *)
-        echo "VOPD_INSTALL_MODE must be always or never; got $VOPD_INSTALL_MODE" >&2
+_vopd_log "[0/7] Confirming that this is an Ascend worker, not WebStudio..."
+if ! command -v npu-smi >/dev/null 2>&1; then
+    echo "npu-smi is unavailable. Run this entry inside the ModelArts Ascend NPU task." >&2
+    echo "WebStudio is only for editing and static checks." >&2
+    exit 2
+fi
+if ! npu-smi info >/dev/null 2>&1; then
+    echo "npu-smi cannot query the device; check the task's 910B allocation and driver mount." >&2
+    exit 2
+fi
+for _vopd_vendor_script in "$CANN_ENV_SCRIPT" "$NNAL_ENV_SCRIPT"; do
+    if [[ ! -f "$_vopd_vendor_script" ]]; then
+        echo "Configured Ascend runtime script does not exist: $_vopd_vendor_script" >&2
+        echo "Select a CANN/NNAL 9.0 task image or inject the corresponding script path." >&2
         exit 2
-        ;;
-esac
+    fi
+done
+if [[ ! -f "$ASDSIP_ENV_SCRIPT" ]]; then
+    if [[ "${VOPD_REQUIRE_ASDSIP:-0}" == "1" ]]; then
+        echo "Required ASDSIP environment script does not exist: $ASDSIP_ENV_SCRIPT" >&2
+        exit 2
+    fi
+    _vopd_log "ASDSIP is unavailable and optional; continuing with CANN/ATB."
+fi
+
+_vopd_log "[1/7] Preparing the isolated NPU-worker Python environment (mode: $VOPD_INSTALL_MODE)..."
+bash "$PROJECT_ROOT/scripts/install_ascend.sh"
+
+if [[ "$VOPD_VENV_DIR" == /* ]]; then
+    _vopd_venv_dir="$VOPD_VENV_DIR"
+else
+    _vopd_venv_dir="${PROJECT_ROOT}/${VOPD_VENV_DIR}"
+fi
+PYTHON_BIN="${_vopd_venv_dir}/bin/python"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "Installer completed without creating the runtime Python: $PYTHON_BIN" >&2
+    exit 2
+fi
+export PYTHON_BIN
+export PATH="$(dirname "$PYTHON_BIN"):${PATH}"
 
 _vopd_log "[2/7] Loading the Huawei CANN, NNAL/ATB and ASDSIP runtime..."
 # shellcheck source=ascend_env.sh
@@ -102,6 +128,8 @@ _vopd_log "[3/7] Recording host and accelerator diagnostics..."
 echo "  project_root:        $PROJECT_ROOT"
 echo "  lifecycle_log:       $VOPD_LIFECYCLE_LOG"
 echo "  python:              $($PYTHON_BIN --version 2>&1)"
+echo "  python_executable:   $PYTHON_BIN"
+echo "  worker_arch:         $(uname -m)"
 echo "  CANN_ENV_SCRIPT:     $CANN_ENV_SCRIPT"
 echo "  NNAL_ENV_SCRIPT:     $NNAL_ENV_SCRIPT"
 echo "  ASDSIP_ENV_SCRIPT:   $ASDSIP_ENV_SCRIPT"
