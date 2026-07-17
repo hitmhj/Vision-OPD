@@ -3,7 +3,10 @@
 # The single public entry for the complete Vision-OPD Ascend lifecycle:
 # configuration -> Huawei prebuilt environment -> optional data preparation ->
 # preflight -> training/checkpointing -> optional HuggingFace model merge.
-set -euo pipefail
+# Match prompt.txt while loading the Huawei environment. In particular, do not
+# enable nounset: NNAL/ATB reads ZSH_VERSION directly in a Bash process.
+set +u
+set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -150,6 +153,7 @@ echo "  save_frequency:  $VOPD_SAVE_FREQ"
 
 _vopd_log "[6/7] Starting Vision-OPD Ray/FSDP training..."
 export VOPD_SKIP_PREFLIGHT=1
+export ASCEND_LAUNCH_BLOCKING=1
 bash "$PROJECT_ROOT/scripts/run_vision_opd_ascend.sh" "$@"
 
 _vopd_log "[7/7] Finalizing saved model artifacts..."

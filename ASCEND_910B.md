@@ -16,6 +16,9 @@ runtime preflight.
 The defaults from the provided platform example load CANN 8.5.1, NNAL/ATB
 with `--cxx_abi=0`, and ASDSIP. These external paths remain overridable through
 `CANN_ENV_SCRIPT`, `NNAL_ENV_SCRIPT`, and `ASDSIP_ENV_SCRIPT`.
+They are sourced in that exact order, without `set -u` and without silently
+falling back to another runtime stack. This matches the working sample because
+the vendor ATB script reads `ZSH_VERSION` without defining it in Bash.
 
 Driver, firmware, CANN and NNAL are system components. They must be installed
 by the machine administrator or supplied by the base container before running
@@ -33,13 +36,18 @@ bash scripts/start_vision_opd_ascend.sh
 The same entry performs, in order:
 
 1. source the configuration and export `VOPD_*` variables;
-2. load the existing driver/CANN/NNAL runtime;
-3. call `scripts/install_ascend.sh` by project-relative path; that installer
-   delegates to the provided Huawei dependency initializer;
+2. call `scripts/install_ascend.sh` by project-relative path; that installer
+   enters the provided Huawei dependency directory, runs its initializer and
+   `accelerate==1.11.0`, then returns with `popd`;
+3. source the configured CANN, NNAL/ATB and ASDSIP scripts exactly once;
 4. reuse or prepare data according to `VOPD_PREPARE_DATA_IF_MISSING`;
 5. run NPU and configuration preflight checks;
 6. train and save FSDP checkpoints;
 7. optionally merge the latest checkpoint according to `VOPD_AUTO_MERGE`.
+
+All repository commands derive `PROJECT_ROOT` from the startup script location.
+The Vision-OPD folder can therefore be mounted anywhere; only the separately
+mounted Huawei dependency/runtime directories use configured external paths.
 
 No Vision-OPD training code or LLaMA-Factory training command is executed by
 the dependency installer. Host firmware, driver, CANN and NNAL are supplied by

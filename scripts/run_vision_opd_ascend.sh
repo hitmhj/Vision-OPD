@@ -1,14 +1,32 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+# Huawei CANN/NNAL environment scripts are not nounset-safe.
+set +u
+set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+VOPD_CONFIG_FILE="${VOPD_CONFIG_FILE:-${PROJECT_ROOT}/vision_opd_ascend.env}"
+if [[ ! -f "$VOPD_CONFIG_FILE" ]]; then
+    echo "Vision-OPD config file does not exist: $VOPD_CONFIG_FILE" >&2
+    exit 2
+fi
+set -a
+# shellcheck disable=SC1090
+source "$VOPD_CONFIG_FILE"
+set +a
+
 export TRAINER_N_GPUS_PER_NODE="${VOPD_GPUS_PER_NODE:-${TRAINER_N_GPUS_PER_NODE:-8}}"
 export TRAINER_NNODES="${VOPD_NNODES:-${TRAINER_NNODES:-1}}"
 
-# shellcheck source=ascend_env.sh
-source "$PROJECT_ROOT/scripts/ascend_env.sh"
+if [[ "${VOPD_ASCEND_ENV_READY:-0}" != "1" ]]; then
+    # shellcheck source=ascend_env.sh
+    source "$PROJECT_ROOT/scripts/ascend_env.sh"
+fi
+
+# prompt.txt changes blocking mode from 0 to 1 immediately before training.
+export ASCEND_LAUNCH_BLOCKING=1
+export TARGET_DEVICE=ascend
 
 TRAIN_FILE="${VOPD_TRAIN_FILE:-${VOPD_DATA_DIR:-${PROJECT_ROOT}/data}/train.parquet}"
 if [[ ! -f "$TRAIN_FILE" ]]; then

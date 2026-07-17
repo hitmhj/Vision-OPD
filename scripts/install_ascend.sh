@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+# Match the Huawei sample bootstrap. Vendor initialization scripts are not
+# nounset-safe (ATB reads ZSH_VERSION directly), so this stage must not use -u.
+set +u
+set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
 VOPD_CONFIG_FILE="${VOPD_CONFIG_FILE:-${PROJECT_ROOT}/vision_opd_ascend.env}"
 
 if [[ -f "$VOPD_CONFIG_FILE" ]]; then
@@ -32,14 +34,16 @@ if [[ ! -f "$SETUP_SCRIPT" ]]; then
 fi
 
 echo "Using Huawei dependency initializer: $SETUP_SCRIPT"
+# The Huawei initializer expects its own directory as cwd, exactly like the
+# sample's `cd /opt/.../llama_factory...`. pushd/popd provides that cwd without
+# losing the relocatable Vision-OPD project root used after installation.
 pushd "$SETUP_DIR" >/dev/null
 bash "$SETUP_SCRIPT"
-popd >/dev/null
-
 if [[ "${VOPD_INSTALL_SAMPLE_ACCELERATE:-1}" == "1" ]]; then
     SAMPLE_ACCELERATE_VERSION="${VOPD_SAMPLE_ACCELERATE_VERSION:-1.11.0}"
     echo "Applying sample dependency: accelerate==$SAMPLE_ACCELERATE_VERSION"
-    "$PYTHON_BIN" -m pip install "accelerate==$SAMPLE_ACCELERATE_VERSION"
+    pip install "accelerate==$SAMPLE_ACCELERATE_VERSION"
 fi
+popd >/dev/null
 
 echo "Huawei-provided Python dependency setup completed."

@@ -294,6 +294,70 @@ def check_static(project_root: Path) -> bool:
         if forbidden in dependency_installer:
             fail(f"dependency installer must delegate to the provided Huawei script, found: {forbidden}")
             success = False
+    for required in ('pushd "$SETUP_DIR"', 'bash "$SETUP_SCRIPT"', 'pip install "accelerate==', "popd"):
+        if required not in dependency_installer:
+            fail(f"dependency installer diverges from the provided sample: {required}")
+            success = False
+
+    runtime_loader = (project_root / "scripts/ascend_env.sh").read_text(encoding="utf-8")
+    vendor_sources = [
+        'source "$CANN_ENV_SCRIPT"',
+        'source "$NNAL_ENV_SCRIPT" --cxx_abi=0',
+        'source "$ASDSIP_ENV_SCRIPT"',
+    ]
+    source_positions = [runtime_loader.find(source_line) for source_line in vendor_sources]
+    if any(position < 0 for position in source_positions) or source_positions != sorted(source_positions):
+        fail("Ascend vendor scripts must follow the sample CANN -> ATB -> ASDSIP order")
+        success = False
+    if re.search(r"(?m)^\s*(?:source|_vision_opd_source)[^#\n]*/usr/local/Ascend", runtime_loader):
+        fail("Ascend runtime loader must not fall back to a different /usr/local stack")
+        success = False
+    if "set +u" not in runtime_loader or "VOPD_ASCEND_ENV_READY=1" not in runtime_loader:
+        fail("Ascend runtime loader lacks nounset compatibility or its one-time load guard")
+        success = False
+    sample_exports = [
+        "CUDA_DEVICE_MAX_CONNECTIONS=1",
+        "ASCEND_SLOG_PRINT_TO_STDOUT=0",
+        "ASCEND_GLOBAL_LOG_LEVEL=3",
+        "TASK_QUEUE_ENABLE=2",
+        "TASK_QUEUE=0",
+        "COMBINED_ENABLE=1",
+        "CPU_AFFINITY_CONF=1",
+        "HCCL_ASYNC_ERROR_HANDLING=0",
+        "HCCL_IF_BASE_PORT=64000",
+        "HCCL_CONNECT_TIMEOUT=7200",
+        "HCCL_EXEC_TIMEOUT=18000",
+        "HCCL_EXEC_TIMEOT=3600",
+        "HCCL_CONNECT_TIMEOT=3600",
+        "ASCEND_LAUNCH_BLOCKING=0",
+        "ACLNN_CACHE_LIMIT=100000",
+        'PYTORCH_NPU_ALLOC_CONF="expandable_segments:True"',
+    ]
+    for sample_export in sample_exports:
+        if sample_export not in runtime_loader:
+            fail(f"Ascend runtime loader is missing sample setting: {sample_export}")
+            success = False
+
+    vendor_entry_files = [
+        "scripts/start_vision_opd_ascend.sh",
+        "scripts/install_ascend.sh",
+        "scripts/run_vision_opd_ascend.sh",
+        "scripts/serve_vision_opd_ascend.sh",
+    ]
+    for relative_path in vendor_entry_files:
+        entry_text = (project_root / relative_path).read_text(encoding="utf-8")
+        if re.search(r"(?m)^\s*set\s+-[^\n#]*u", entry_text):
+            fail(f"Huawei environment entry must not enable Bash nounset: {relative_path}")
+            success = False
+    blocking_position = job_entry.find("export ASCEND_LAUNCH_BLOCKING=1")
+    training_position = job_entry.find('run_vision_opd_ascend.sh" "$@"')
+    if blocking_position < 0 or training_position < 0 or blocking_position > training_position:
+        fail("ASCEND_LAUNCH_BLOCKING=1 must be set immediately before Vision-OPD training")
+        success = False
+    ascend_runner = (project_root / "scripts/run_vision_opd_ascend.sh").read_text(encoding="utf-8")
+    if "VOPD_ASCEND_ENV_READY" not in ascend_runner or "PROJECT_ROOT" not in ascend_runner:
+        fail("Ascend training wrapper lacks the one-time environment guard or relocatable project root")
+        success = False
     env_template = (project_root / "vision_opd_ascend.env").read_text(encoding="utf-8")
     for variable in (
         "VOPD_MODEL_PATH",
