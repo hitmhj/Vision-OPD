@@ -29,6 +29,23 @@ CUDA_ONLY_QWEN_FAST_PATHS = (
     "flash-linear-attention",
 )
 
+PROVIDED_ENV_IMPORTS = {
+    "accelerate": "accelerate",
+    "datasets": "datasets",
+    "hydra-core": "hydra",
+    "omegaconf": "omegaconf",
+    "peft": "peft",
+    "ray": "ray",
+    "safetensors": "safetensors",
+    "tensordict": "tensordict",
+    "torch": "torch",
+    "torch-npu": "torch_npu",
+    "torchdata": "torchdata",
+    "transformers": "transformers",
+    "vllm": "vllm",
+    "vllm-ascend": "vllm_ascend",
+}
+
 
 def fail(message: str) -> None:
     print(f"[FAIL] {message}", file=sys.stderr)
@@ -81,6 +98,24 @@ def check_declared_dependencies(project_root: Path) -> bool:
     except importlib.metadata.PackageNotFoundError:
         fail("the Vision-OPD project package is not installed; run pip install -e . --no-deps")
         success = False
+    return success
+
+
+def check_provided_environment() -> bool:
+    """Check the environment created by the provided Huawei initializer."""
+    success = True
+    for distribution, module_name in PROVIDED_ENV_IMPORTS.items():
+        try:
+            importlib.import_module(module_name)
+            version = importlib.metadata.version(distribution)
+            ok(f"provided environment: {distribution}=={version}")
+        except Exception as exc:
+            fail(f"provided environment cannot import {distribution}: {exc}")
+            success = False
+
+    if os.environ.get("VOPD_INSTALL_SAMPLE_ACCELERATE", "1") == "1":
+        expected = os.environ.get("VOPD_SAMPLE_ACCELERATE_VERSION", "1.11.0")
+        success = check_version("accelerate", expected) and success
     return success
 
 
@@ -250,6 +285,15 @@ def check_static(project_root: Path) -> bool:
         if stage not in job_entry:
             fail(f"unified Ascend lifecycle is missing stage: {stage}")
             success = False
+    dependency_installer = (project_root / "scripts/install_ascend.sh").read_text(encoding="utf-8")
+    for stage in ("VOPD_DEPENDENCY_SETUP_DIR", "VOPD_DEPENDENCY_SETUP_SCRIPT", "VOPD_SAMPLE_ACCELERATE_VERSION"):
+        if stage not in dependency_installer:
+            fail(f"provided dependency installer is missing: {stage}")
+            success = False
+    for forbidden in ("requirements-ascend.txt", "pip install -e"):
+        if forbidden in dependency_installer:
+            fail(f"dependency installer must delegate to the provided Huawei script, found: {forbidden}")
+            success = False
     env_template = (project_root / "vision_opd_ascend.env").read_text(encoding="utf-8")
     for variable in (
         "VOPD_MODEL_PATH",
@@ -259,6 +303,12 @@ def check_static(project_root: Path) -> bool:
         "VOPD_TOTAL_TRAINING_STEPS",
         "VOPD_MAX_TOKENS_PER_NPU",
         "VOPD_RESUME_MODE",
+        "VOPD_INSTALL_MODE",
+        "VOPD_DEPENDENCY_SETUP_DIR",
+        "VOPD_DEPENDENCY_SETUP_SCRIPT",
+        "CANN_ENV_SCRIPT",
+        "NNAL_ENV_SCRIPT",
+        "ASDSIP_ENV_SCRIPT",
     ):
         if variable not in env_template:
             fail(f"Ascend lifecycle configuration is missing: {variable}")
@@ -283,27 +333,15 @@ def check_static(project_root: Path) -> bool:
 
 
 def check_runtime(project_root: Path, min_npus: int) -> bool:
-    success = check_declared_dependencies(project_root)
+    # The platform initializer owns package resolution. Validate imports and
+    # report its actual versions instead of imposing requirements-ascend.txt.
+    success = check_provided_environment()
     success = check_lifecycle_config(min_npus) and success
     if not ((3, 10) <= sys.version_info[:2] < (3, 12)):
         fail(f"Python {platform.python_version()} is unsupported; use Python 3.10 or 3.11")
         success = False
     else:
         ok(f"Python {platform.python_version()}")
-
-    for distribution, expected in EXPECTED_VERSIONS.items():
-        success = check_version(distribution, expected) and success
-
-    for distribution in CUDA_ONLY_QWEN_FAST_PATHS:
-        try:
-            installed_version = importlib.metadata.version(distribution)
-        except importlib.metadata.PackageNotFoundError:
-            continue
-        fail(
-            f"CUDA-only optional package {distribution}=={installed_version} is installed; "
-            "use a clean Ascend environment"
-        )
-        success = False
 
     if not os.environ.get("ASCEND_HOME_PATH"):
         fail("ASCEND_HOME_PATH is unset; source the CANN set_env.sh first")

@@ -1,4 +1,6 @@
-# Vision-OPD Python environment for Ascend 910B / Atlas A2.
+# Optional standalone Vision-OPD lock file for Ascend 910B / Atlas A2.
+# The production unified entry does not install this file; it reuses the
+# Huawei-provided Qwen3.5 dependency initializer configured in the env file.
 #
 # System prerequisites are intentionally not installed by pip:
 #   - Ascend firmware and driver

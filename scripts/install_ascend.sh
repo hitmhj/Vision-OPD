@@ -4,19 +4,42 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-export TRAINER_N_GPUS_PER_NODE="${ASCEND_INSTALL_MIN_NPUS:-1}"
+VOPD_CONFIG_FILE="${VOPD_CONFIG_FILE:-${PROJECT_ROOT}/vision_opd_ascend.env}"
 
-# CANN/NNAL must already exist on the host or in the base container.
-# shellcheck source=ascend_env.sh
-source "$PROJECT_ROOT/scripts/ascend_env.sh"
+if [[ -f "$VOPD_CONFIG_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$VOPD_CONFIG_FILE"
+    set +a
+fi
 
-"$PYTHON_BIN" -c 'import sys; assert (3, 10) <= sys.version_info[:2] < (3, 12), "Python 3.10 or 3.11 is required"'
-"$PYTHON_BIN" -m pip install --upgrade pip
-"$PYTHON_BIN" -m pip install -r "$PROJECT_ROOT/requirements-ascend.txt"
-"$PYTHON_BIN" -m pip install -e "$PROJECT_ROOT" --no-deps
-"$PYTHON_BIN" -m pip check
-"$PYTHON_BIN" "$PROJECT_ROOT/scripts/check_ascend_env.py" \
-    --min-npus "$TRAINER_N_GPUS_PER_NODE"
+SETUP_DIR="${VOPD_DEPENDENCY_SETUP_DIR:-$PROJECT_ROOT}"
+if [[ "$SETUP_DIR" != /* ]]; then
+    SETUP_DIR="${PROJECT_ROOT}/${SETUP_DIR}"
+fi
+SETUP_SCRIPT="${VOPD_DEPENDENCY_SETUP_SCRIPT:-train_scripts/init_env_qwen35vl_speedup_local.sh}"
+if [[ "$SETUP_SCRIPT" != /* ]]; then
+    SETUP_SCRIPT="${SETUP_DIR}/${SETUP_SCRIPT}"
+fi
 
-echo "Ascend Python environment is ready."
-echo "Unified job entry: bash scripts/start_vision_opd_ascend.sh"
+if [[ ! -d "$SETUP_DIR" ]]; then
+    echo "Dependency setup directory does not exist: $SETUP_DIR" >&2
+    exit 2
+fi
+if [[ ! -f "$SETUP_SCRIPT" ]]; then
+    echo "Huawei dependency setup script does not exist: $SETUP_SCRIPT" >&2
+    exit 2
+fi
+
+echo "Using Huawei dependency initializer: $SETUP_SCRIPT"
+pushd "$SETUP_DIR" >/dev/null
+bash "$SETUP_SCRIPT"
+popd >/dev/null
+
+if [[ "${VOPD_INSTALL_SAMPLE_ACCELERATE:-1}" == "1" ]]; then
+    SAMPLE_ACCELERATE_VERSION="${VOPD_SAMPLE_ACCELERATE_VERSION:-1.11.0}"
+    echo "Applying sample dependency: accelerate==$SAMPLE_ACCELERATE_VERSION"
+    "$PYTHON_BIN" -m pip install "accelerate==$SAMPLE_ACCELERATE_VERSION"
+fi
+
+echo "Huawei-provided Python dependency setup completed."

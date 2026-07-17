@@ -50,8 +50,10 @@ bash scripts/start_vision_opd_ascend.sh
 ```
 
 The entry exports the configuration as real environment variables and performs
-the complete lifecycle: reuse/install Python dependencies, reuse/prepare data,
-preflight, train, save checkpoints, and optionally merge the latest checkpoint.
+the complete lifecycle: call the Huawei-provided dependency initializer through
+the project-relative `scripts/install_ascend.sh`, load the Ascend runtime,
+reuse/prepare data, preflight, train, save checkpoints, and optionally merge the
+latest checkpoint. The sample LLaMA-Factory training command is not used.
 ModelArts-injected `VOPD_*` values take precedence over file defaults.
 
 ### 2. Prepare Training Data

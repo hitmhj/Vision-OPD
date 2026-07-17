@@ -28,7 +28,7 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import PreTrainedTokenizer
 
-from verl.utils.device import get_device_name, get_torch_device
+from verl.utils.device import get_device_name, get_torch_device, is_cuda_available
 
 try:
     from flash_attn.ops.triton.cross_entropy import cross_entropy_loss
@@ -86,7 +86,9 @@ def logprobs_from_logits(logits, labels, inplace_backward=True):
     Returns:
         Tensor: Log-probabilities of the target labels, shape logits.shape[:-1].
     """
-    if FLAH_ATTN_CROSS_ENTROPY_LOSS_AVAILABLE:
+    # The provided Huawei environment may also contain a CUDA flash-attn
+    # wheel. Importability alone must never select it for NPU tensors.
+    if FLAH_ATTN_CROSS_ENTROPY_LOSS_AVAILABLE and is_cuda_available:
         batch_dim = logits.shape[:-1]
         last_dim = logits.shape[-1]
         logits = logits.reshape(-1, last_dim)

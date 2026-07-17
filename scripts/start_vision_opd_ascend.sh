@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 
 # The single public entry for the complete Vision-OPD Ascend lifecycle:
-# configuration -> optional Python setup -> optional data preparation ->
+# configuration -> Huawei prebuilt environment -> optional data preparation ->
 # preflight -> training/checkpointing -> optional HuggingFace model merge.
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
 VOPD_CONFIG_FILE="${VOPD_CONFIG_FILE:-${PROJECT_ROOT}/vision_opd_ascend.env}"
 
 # Export every value loaded from the config file. Entries in the checked-in
@@ -60,36 +61,57 @@ mkdir -p \
     "$HF_HOME" \
     "$HF_DATASETS_CACHE" \
     "$VLLM_CACHE_ROOT" \
-    "$TORCH_HOME"
+    "$TORCH_HOME" \
+    "$PIP_CACHE_DIR"
 
-echo "[1/6] Loading the Ascend runtime environment..."
-# shellcheck source=ascend_env.sh
-source "$PROJECT_ROOT/scripts/ascend_env.sh"
+_vopd_log_id="${MA_VJ_NAME:-${JOB_ID:-$(date +%Y%m%d_%H%M%S)}}"
+_vopd_log_id="${_vopd_log_id//[^A-Za-z0-9_.-]/_}"
+export VOPD_LIFECYCLE_LOG="${VOPD_LIFECYCLE_LOG:-${VOPD_LOG_DIR}/lifecycle_${_vopd_log_id}.log}"
+if [[ "$VOPD_ENABLE_TEE_LOG" == "1" ]]; then
+    exec > >(tee -a "$VOPD_LIFECYCLE_LOG") 2>&1
+fi
 
-echo "[2/6] Resolving the Python environment (mode: $VOPD_INSTALL_MODE)..."
+_vopd_log() {
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+}
+
+trap '_vopd_status=$?; _vopd_log "ERROR: lifecycle failed at line ${BASH_LINENO[0]} (exit=${_vopd_status})"; exit "${_vopd_status}"' ERR
+
+_vopd_log "[1/7] Preparing dependencies through the project-relative installer (mode: $VOPD_INSTALL_MODE)..."
 case "$VOPD_INSTALL_MODE" in
     always)
         bash "$PROJECT_ROOT/scripts/install_ascend.sh"
         ;;
-    auto)
-        if ! "$PYTHON_BIN" "$PROJECT_ROOT/scripts/check_ascend_env.py" \
-            --dependencies-only >/dev/null 2>&1; then
-            echo "The Python environment is incomplete or version-mismatched; installing all pinned dependencies."
-            bash "$PROJECT_ROOT/scripts/install_ascend.sh"
-        else
-            echo "Reusing the complete pinned Vision-OPD environment."
-        fi
-        ;;
     never)
-        echo "Dependency installation disabled by VOPD_INSTALL_MODE=never."
+        _vopd_log "Skipping dependency setup because VOPD_INSTALL_MODE=never."
         ;;
     *)
-        echo "VOPD_INSTALL_MODE must be auto, always, or never; got $VOPD_INSTALL_MODE" >&2
+        echo "VOPD_INSTALL_MODE must be always or never; got $VOPD_INSTALL_MODE" >&2
         exit 2
         ;;
 esac
 
-echo "[3/6] Resolving the training dataset..."
+_vopd_log "[2/7] Loading the Huawei CANN, NNAL/ATB and ASDSIP runtime..."
+# shellcheck source=ascend_env.sh
+source "$PROJECT_ROOT/scripts/ascend_env.sh"
+
+_vopd_log "[3/7] Recording host and accelerator diagnostics..."
+echo "  project_root:        $PROJECT_ROOT"
+echo "  lifecycle_log:       $VOPD_LIFECYCLE_LOG"
+echo "  python:              $($PYTHON_BIN --version 2>&1)"
+echo "  CANN_ENV_SCRIPT:     $CANN_ENV_SCRIPT"
+echo "  NNAL_ENV_SCRIPT:     $NNAL_ENV_SCRIPT"
+echo "  ASDSIP_ENV_SCRIPT:   $ASDSIP_ENV_SCRIPT"
+echo "  MA_NUM_HOSTS:        ${MA_NUM_HOSTS:-unset}"
+echo "  MA_NUM_GPUS:         ${MA_NUM_GPUS:-unset}"
+echo "  VC_TASK_INDEX:       ${VC_TASK_INDEX:-unset}"
+echo "  visible_npus:        ${ASCEND_RT_VISIBLE_DEVICES:-unset}"
+npu-smi info
+/usr/bin/gcc --version
+/usr/bin/g++ --version
+free -h
+
+_vopd_log "[4/7] Resolving the training dataset..."
 if [[ ! -f "$VOPD_TRAIN_FILE" ]]; then
     if [[ "$VOPD_PREPARE_DATA_IF_MISSING" == "1" ]]; then
         "$PYTHON_BIN" "$PROJECT_ROOT/scripts/prepare_data.py" --data-dir "$VOPD_DATA_DIR"
@@ -104,7 +126,7 @@ if [[ ! -f "$VOPD_TRAIN_FILE" ]]; then
     exit 1
 fi
 
-echo "[4/6] Running Ascend and configuration preflight checks..."
+_vopd_log "[5/7] Running Ascend and configuration preflight checks..."
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/check_ascend_env.py" --min-npus "$VOPD_GPUS_PER_NODE"
 
 echo "Vision-OPD resolved configuration"
@@ -114,6 +136,9 @@ echo "  model:           $VOPD_MODEL_PATH"
 echo "  train_file:      $VOPD_TRAIN_FILE"
 echo "  cache_dir:       $VOPD_CACHE_DIR"
 echo "  output_dir:      $VOPD_OUTPUT_DIR"
+echo "  rollout_dir:     $VOPD_ROLLOUT_DIR"
+echo "  merged_model:   $VOPD_MERGED_MODEL_DIR"
+echo "  tensorboard:    $TENSORBOARD_DIR"
 echo "  npu_per_node:    $VOPD_GPUS_PER_NODE"
 echo "  learning_rate:   $VOPD_LR"
 echo "  train_batch:     $VOPD_TRAIN_BATCH_SIZE"
@@ -123,11 +148,11 @@ echo "  resume_mode:     $VOPD_RESUME_MODE"
 echo "  prompt/response: $VOPD_MAX_PROMPT_LENGTH/$VOPD_MAX_RESPONSE_LENGTH"
 echo "  save_frequency:  $VOPD_SAVE_FREQ"
 
-echo "[5/6] Starting Vision-OPD training and checkpoint lifecycle..."
+_vopd_log "[6/7] Starting Vision-OPD Ray/FSDP training..."
 export VOPD_SKIP_PREFLIGHT=1
 bash "$PROJECT_ROOT/scripts/run_vision_opd_ascend.sh" "$@"
 
-echo "[6/6] Finalizing saved model artifacts..."
+_vopd_log "[7/7] Finalizing saved model artifacts..."
 if [[ "$VOPD_AUTO_MERGE" == "1" ]]; then
     mapfile -t _vopd_checkpoints < <(
         find "$VOPD_OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d -name 'global_step_*' -print | sort -V
@@ -146,4 +171,20 @@ else
     echo "Checkpoint merge disabled by VOPD_AUTO_MERGE=0."
 fi
 
-echo "Vision-OPD Ascend lifecycle completed successfully."
+export VOPD_ARTIFACT_MANIFEST="${VOPD_ARTIFACT_MANIFEST:-${VOPD_LOG_DIR}/artifacts.env}"
+{
+    printf 'VOPD_CHECKPOINT_DIR=%q\n' "$VOPD_OUTPUT_DIR"
+    printf 'VOPD_ROLLOUT_DIR=%q\n' "$VOPD_ROLLOUT_DIR"
+    printf 'VOPD_MERGED_MODEL_DIR=%q\n' "$VOPD_MERGED_MODEL_DIR"
+    printf 'VOPD_TENSORBOARD_DIR=%q\n' "$TENSORBOARD_DIR"
+    printf 'VOPD_LIFECYCLE_LOG=%q\n' "$VOPD_LIFECYCLE_LOG"
+} > "$VOPD_ARTIFACT_MANIFEST"
+
+_vopd_log "Vision-OPD Ascend lifecycle completed successfully."
+echo "Artifact locations"
+echo "  FSDP checkpoints: $VOPD_OUTPUT_DIR/global_step_*/actor"
+echo "  Rollout records:  $VOPD_ROLLOUT_DIR"
+echo "  Merged HF model:  $VOPD_MERGED_MODEL_DIR"
+echo "  TensorBoard:      $TENSORBOARD_DIR"
+echo "  Lifecycle log:    $VOPD_LIFECYCLE_LOG"
+echo "  Artifact manifest:$VOPD_ARTIFACT_MANIFEST"
