@@ -43,31 +43,11 @@ if [[ "${VOPD_REQUIRE_LOCAL_MODEL:-1}" == "1" ]]; then
     _vopd_resolve_project_variable VOPD_MODEL_PATH
 fi
 
-# Production tasks normally cannot reach Hugging Face. Fail before a long
-# dependency installation when the required local model mount is absent.
+# Production tasks normally cannot reach Hugging Face.
 if [[ "${VOPD_HF_OFFLINE:-1}" == "1" ]]; then
     export HF_HUB_OFFLINE=1
     export TRANSFORMERS_OFFLINE=1
     export HF_DATASETS_OFFLINE=1
-fi
-if [[ "${VOPD_REQUIRE_LOCAL_MODEL:-1}" == "1" && ! -d "$VOPD_MODEL_PATH" ]]; then
-    echo "Local model directory does not exist: $VOPD_MODEL_PATH" >&2
-    echo "Mount Qwen3.5-4B and inject VOPD_MODEL_PATH=/path/to/model." >&2
-    echo "The production entry does not download model weights from Hugging Face." >&2
-    exit 2
-fi
-if [[ "${VOPD_REQUIRE_LOCAL_MODEL:-1}" == "1" ]]; then
-    _vopd_asset_python="${VOPD_BOOTSTRAP_PYTHON:-}"
-    if [[ -z "$_vopd_asset_python" ]]; then
-        _vopd_asset_python="$(command -v python3.10 || command -v python3 || true)"
-    fi
-    if [[ -z "$_vopd_asset_python" || ! -x "$_vopd_asset_python" ]]; then
-        echo "Python is unavailable for the local model integrity check." >&2
-        exit 2
-    fi
-    "$_vopd_asset_python" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
-        --project-root "$PROJECT_ROOT" \
-        --model-dir "$VOPD_MODEL_PATH"
 fi
 
 # ModelArts can invoke a rank-table boot file once per NPU. Only global rank 0
@@ -151,6 +131,33 @@ if [[ ! -f "$ASDSIP_ENV_SCRIPT" ]]; then
     _vopd_log "ASDSIP is unavailable and optional; continuing with CANN/ATB."
 fi
 
+# The rank and worker checks above are intentionally first: secondary platform
+# invocations exit cleanly, and WebStudio reports the actual host mismatch
+# instead of a misleading missing-model error. The model is still validated
+# before any dependency installation begins.
+if [[ "${VOPD_REQUIRE_LOCAL_MODEL:-1}" == "1" && ! -d "$VOPD_MODEL_PATH" ]]; then
+    echo "Local model directory does not exist: $VOPD_MODEL_PATH" >&2
+    echo "Run the asset preparation phase or inject VOPD_MODEL_PATH=/path/to/model." >&2
+    echo "The production entry does not download model weights from Hugging Face." >&2
+    exit 2
+fi
+if [[ "${VOPD_REQUIRE_LOCAL_MODEL:-1}" == "1" ]]; then
+    _vopd_asset_python="${VOPD_BOOTSTRAP_PYTHON:-}"
+    if [[ -z "$_vopd_asset_python" ]]; then
+        _vopd_asset_python="$(command -v python3.10 || command -v python3 || true)"
+    fi
+    if [[ -z "$_vopd_asset_python" || ! -x "$_vopd_asset_python" ]]; then
+        echo "Python is unavailable for the local model integrity check." >&2
+        exit 2
+    fi
+    "$_vopd_asset_python" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
+        --project-root "$PROJECT_ROOT" \
+        --model-dir "$VOPD_MODEL_PATH" \
+        --expected-model-repo-id "$VOPD_MODEL_REPO_ID" \
+        --expected-model-revision "$VOPD_MODEL_REVISION" \
+        --require-manifests
+fi
+
 _vopd_log "[1/7] Preparing the isolated NPU-worker Python environment (mode: $VOPD_INSTALL_MODE)..."
 bash "$PROJECT_ROOT/scripts/install_ascend.sh"
 
@@ -222,6 +229,7 @@ echo "Vision-OPD resolved configuration"
 echo "  config_file:     $VOPD_CONFIG_FILE"
 echo "  job_id:          ${MA_VJ_NAME:-${JOB_ID:-unknown}}"
 echo "  model:           $VOPD_MODEL_PATH"
+echo "  model_revision:  $VOPD_MODEL_REVISION"
 echo "  train_file:      $VOPD_TRAIN_FILE"
 echo "  cache_dir:       $VOPD_CACHE_DIR"
 echo "  output_dir:      $VOPD_OUTPUT_DIR"
@@ -268,6 +276,7 @@ export VOPD_ARTIFACT_MANIFEST="${VOPD_ARTIFACT_MANIFEST:-${VOPD_LOG_DIR}/artifac
     printf 'VOPD_MERGED_MODEL_DIR=%q\n' "$VOPD_MERGED_MODEL_DIR"
     printf 'VOPD_TENSORBOARD_DIR=%q\n' "$TENSORBOARD_DIR"
     printf 'VOPD_LIFECYCLE_LOG=%q\n' "$VOPD_LIFECYCLE_LOG"
+    printf 'VOPD_MODEL_REVISION=%q\n' "$VOPD_MODEL_REVISION"
 } > "$VOPD_ARTIFACT_MANIFEST"
 
 _vopd_log "Vision-OPD Ascend lifecycle completed successfully."

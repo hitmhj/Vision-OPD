@@ -9,7 +9,8 @@ environment must not be mixed.
 WebStudio is only an editing environment. The production entry selects Python
 and installs dependencies on the actual NPU worker. This target is deliberately
 fixed to the observed Python 3.10/aarch64 Atlas A2 worker and creates an isolated environment at
-`VOPD_VENV_DIR` (default: `.venv-ascend`). `VOPD_INSTALL_MODE=auto` reuses the
+`VOPD_VENV_DIR` (default: `envs/runtime/.venv-ascend`).
+`VOPD_INSTALL_MODE=auto` reuses the
 environment only when all three Ascend lock files and the installer itself are
 unchanged.
 
@@ -36,10 +37,46 @@ Driver, firmware, CANN and NNAL are system components. They must be installed
 by the machine administrator or supplied by the base container before running
 the repository installer. `npu-smi info` must succeed.
 
-## Unified lifecycle entry
+## Portable asset preparation
 
-Configure `vision_opd_ascend.env` and use one public entry for both an
-exploration environment and a ModelArts task:
+Run the asset preparation entry before the training entry. It derives every
+default from the repository root and creates `envs/models/Qwen3.5-4B`,
+`envs/wheels/cp310-aarch64`, `envs/cache` and `envs/runtime`.
+
+The production-safe default uses no network. It can gather compatible wheels
+from one or more platform directories and copy a complete model snapshot:
+
+```bash
+VOPD_INTERNAL_WHEEL_DIRS=/opt/platform/whls:/mounted/extra/whls \
+VOPD_MODEL_SOURCE_DIR=/mounted/models/Qwen3.5-4B \
+bash scripts/prepare_ascend_assets.sh
+```
+
+Compiled `cp311` wheels are ignored by pip on the Python 3.10 worker; only
+compatible `cp310/aarch64` and universal wheels are collected. If the actual
+Python 3.10/aarch64 preparation worker has approved network access, use:
+
+```bash
+bash scripts/prepare_ascend_assets.sh --online
+```
+
+`--online` may install a small isolated Hugging Face download helper under
+`envs/runtime/asset-preparer`, download the complete Qwen snapshot, fetch the
+two vLLM-Ascend special wheels from the official Huawei OBS location, and ask
+pip to collect every direct and transitive wheel. Without `--online`, none of
+those hosts is contacted. A successful preparation writes a lock fingerprint
+and SHA-256 inventory into the wheelhouse and records the immutable Qwen model
+revision. `--check-only` validates both manifests without contacting a host.
+
+The generated `.venv-ascend` is deliberately not a portable asset: the start
+entry creates it on the real worker because virtual environments contain
+host-specific paths and binary ABIs.
+
+## Unified training lifecycle entry
+
+After assets are ready, configure `vision_opd_ascend.env` and keep using the
+same public training entry for both an exploration environment and a ModelArts
+task:
 
 ```bash
 bash scripts/start_vision_opd_ascend.sh
@@ -61,13 +98,14 @@ The same entry performs, in order:
 
 Production installation is offline by default. Mount a complete wheelhouse for
 Python 3.10/aarch64, then set `VOPD_LOCAL_WHEEL_DIR` if it is not the default
-project-relative `whls` directory. `VOPD_PIP_NO_INDEX=1` is already the default.
+project-relative `envs/wheels/cp310-aarch64` directory.
+`VOPD_PIP_NO_INDEX=1` is already the default.
 The earlier LLaMAFactory wheelhouse is not complete for Vision-OPD and cannot
 be used as that directory.
 
 The installer uses `--no-index --find-links`, ignores inherited pip
 configuration, and clears inherited `PIP_EXTRA_INDEX_URL`/`PIP_FIND_LINKS`.
-It validates the wheelhouse and performs `pip --dry-run` resolution before
+It validates the resolved wheelhouse manifest and performs `pip --dry-run` resolution before
 installing the NPU stack. Neither PyTorch, Huawei, Hugging Face nor GitHub is
 contacted by the production default. The wheelhouse must include the exact
 cp310/aarch64 `torch_npu-2.9.0.post1+git4c901a4` and
@@ -75,10 +113,11 @@ cp310/aarch64 `torch_npu-2.9.0.post1+git4c901a4` and
 needed by the three Ascend lock files.
 
 Model and dataset downloads are disabled in the production entry by default.
-Upload or mount Qwen3.5-4B under the default `models/Qwen3.5-4B`, or inject
+Upload or mount Qwen3.5-4B under the default `envs/models/Qwen3.5-4B`, or inject
 `VOPD_MODEL_PATH=/mounted/model/path`. Relative injected paths are resolved
 against the repository rather than the algorithm launch directory.
-`VOPD_REQUIRE_LOCAL_MODEL=1` validates the config, processor, tokenizer, weight
+`VOPD_REQUIRE_LOCAL_MODEL=1` validates the pinned revision manifest, config,
+processor, tokenizer, weight
 index and all referenced shards before dependency
 installation, and `VOPD_HF_OFFLINE=1` exports the Hugging Face/Transformers/
 Datasets offline flags. The local compressed dataset layout documented below is

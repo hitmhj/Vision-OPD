@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
+import zipfile
 from pathlib import Path
 
 
@@ -15,13 +17,21 @@ LOCK_FILES = (
     "requirements-ascend-core.txt",
     "requirements-ascend-plugins.txt",
 )
+MODEL_MANIFEST = ".vision_opd_model_manifest.json"
+WHEELHOUSE_MANIFEST = ".vision_opd_wheelhouse_manifest.json"
 
 
 def fail(message: str) -> None:
     print(f"[FAIL] {message}", file=sys.stderr)
 
 
-def check_model(model_dir: Path) -> bool:
+def check_model(
+    model_dir: Path,
+    *,
+    expected_repo_id: str | None = None,
+    expected_revision: str | None = None,
+    require_manifest: bool = False,
+) -> bool:
     success = True
     if not model_dir.is_dir():
         fail(f"local model directory does not exist: {model_dir}")
@@ -62,6 +72,51 @@ def check_model(model_dir: Path) -> bool:
         fail("incomplete model downloads are present: " + ", ".join(incomplete[:10]))
         success = False
 
+    manifest_path = model_dir / MODEL_MANIFEST
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("schema") != 1:
+                raise ValueError("unsupported schema")
+            repo_id = manifest["repo_id"]
+            requested_revision = manifest["requested_revision"]
+            resolved_revision = manifest["resolved_revision"]
+            if not isinstance(repo_id, str) or not repo_id:
+                raise ValueError("repo_id must be a non-empty string")
+            if not isinstance(requested_revision, str) or not requested_revision:
+                raise ValueError("requested_revision must be a non-empty string")
+            if not isinstance(resolved_revision, str) or not resolved_revision:
+                raise ValueError("resolved_revision must be a non-empty string")
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            fail(f"invalid model asset manifest {manifest_path}: {exc}")
+            success = False
+        else:
+            if expected_repo_id and repo_id != expected_repo_id:
+                fail(f"model repository mismatch: manifest has {repo_id}, expected {expected_repo_id}")
+                success = False
+            if expected_revision and requested_revision != expected_revision:
+                fail(
+                    "requested model revision mismatch: "
+                    f"manifest has {requested_revision}, expected {expected_revision}"
+                )
+                success = False
+            if (
+                expected_revision
+                and re.fullmatch(r"[0-9a-fA-F]{40}", expected_revision)
+                and resolved_revision.lower() != expected_revision.lower()
+            ):
+                fail(
+                    "resolved model commit mismatch: "
+                    f"manifest has {resolved_revision}, expected {expected_revision}"
+                )
+                success = False
+    elif require_manifest:
+        fail(
+            f"model asset manifest is missing: {manifest_path}; "
+            "run scripts/prepare_ascend_assets.sh first"
+        )
+        success = False
+
     if success:
         print(f"[ OK ] complete local Qwen3.5 model: {model_dir}")
     return success
@@ -81,12 +136,120 @@ def pinned_requirements(project_root: Path) -> list[tuple[str, str]]:
     return pins
 
 
-def check_wheelhouse(project_root: Path, wheel_dir: Path) -> bool:
+def requirements_digest(project_root: Path) -> str:
+    digest = hashlib.sha256()
+    for filename in LOCK_FILES:
+        path = project_root / filename
+        digest.update(path.name.encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def version_tuple(value: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in value.split("."))
+
+
+def write_wheelhouse_manifest(project_root: Path, wheel_dir: Path) -> Path:
+    wheel_paths = sorted(path for path in wheel_dir.iterdir() if path.suffix.lower() == ".whl")
+    manifest = {
+        "schema": 1,
+        "resolution_complete": True,
+        "python": "3.10",
+        "platform": "aarch64",
+        "requirements_sha256": requirements_digest(project_root),
+        "wheels": [
+            {
+                "filename": path.name,
+                "size": path.stat().st_size,
+                "sha256": file_digest(path),
+            }
+            for path in wheel_paths
+        ],
+    }
+    manifest_path = wheel_dir / WHEELHOUSE_MANIFEST
+    temporary_path = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
+    temporary_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary_path.replace(manifest_path)
+    return manifest_path
+
+
+def check_wheelhouse_manifest(project_root: Path, wheel_dir: Path, files: list[str]) -> bool:
+    manifest_path = wheel_dir / WHEELHOUSE_MANIFEST
+    if not manifest_path.is_file():
+        fail(
+            f"resolved wheelhouse manifest is missing: {manifest_path}; "
+            "run scripts/prepare_ascend_assets.sh before --check-only or training"
+        )
+        return False
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("schema") != 1 or manifest.get("resolution_complete") is not True:
+            raise ValueError("unsupported schema or incomplete pip resolution")
+        if manifest.get("python") != "3.10" or manifest.get("platform") != "aarch64":
+            raise ValueError("manifest target must be Python 3.10/aarch64")
+        if manifest.get("requirements_sha256") != requirements_digest(project_root):
+            raise ValueError("requirements locks changed after the wheelhouse was resolved")
+        entries = manifest["wheels"]
+        if not isinstance(entries, list):
+            raise TypeError("wheels must be a list")
+        recorded = {entry["filename"]: entry for entry in entries}
+        if len(recorded) != len(entries):
+            raise ValueError("duplicate wheel filenames are present")
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        fail(f"invalid resolved wheelhouse manifest {manifest_path}: {exc}")
+        return False
+
+    actual_names = set(files)
+    recorded_names = set(recorded)
+    if actual_names != recorded_names:
+        missing = sorted(recorded_names - actual_names)
+        extra = sorted(actual_names - recorded_names)
+        details = []
+        if missing:
+            details.append("missing=" + ", ".join(missing[:10]))
+        if extra:
+            details.append("unrecorded=" + ", ".join(extra[:10]))
+        fail("wheelhouse inventory differs from the resolved manifest: " + "; ".join(details))
+        return False
+
+    success = True
+    for filename in sorted(recorded):
+        path = wheel_dir / filename
+        entry = recorded[filename]
+        if entry.get("size") != path.stat().st_size:
+            fail(f"wheel size differs from manifest: {filename}")
+            success = False
+            continue
+        if entry.get("sha256") != file_digest(path):
+            fail(f"wheel SHA-256 differs from manifest: {filename}")
+            success = False
+    return success
+
+
+def check_wheelhouse(
+    project_root: Path,
+    wheel_dir: Path,
+    *,
+    require_manifest: bool = False,
+    check_existing_manifest: bool = True,
+) -> bool:
     if not wheel_dir.is_dir():
         fail(f"offline wheelhouse does not exist: {wheel_dir}")
         return False
 
-    files = [path.name for path in wheel_dir.iterdir() if path.is_file()]
+    wheel_paths = sorted(path for path in wheel_dir.iterdir() if path.suffix.lower() == ".whl")
+    files = [path.name for path in wheel_paths]
     lowered = [name.lower() for name in files]
     success = True
     encoded_names = [name for name in files if "%2b" in name.lower()]
@@ -97,7 +260,20 @@ def check_wheelhouse(project_root: Path, wheel_dir: Path) -> bool:
         )
         success = False
 
-    if not any(name.startswith("pip-") for name in lowered):
+    invalid_archives = [path.name for path in wheel_paths if not zipfile.is_zipfile(path)]
+    if invalid_archives:
+        fail(
+            "invalid or truncated wheel archives are present: "
+            + ", ".join(invalid_archives[:10])
+        )
+        success = False
+
+    pip_versions = []
+    for name in lowered:
+        match = re.match(r"^pip-([0-9]+(?:\.[0-9]+)*)-", name)
+        if match:
+            pip_versions.append(match.group(1))
+    if not any(version_tuple(version) >= (23, 3) and version_tuple(version) < (26,) for version in pip_versions):
         fail("offline wheelhouse lacks pip>=23.3,<26 required to resolve the environment")
         success = False
 
@@ -135,6 +311,11 @@ def check_wheelhouse(project_root: Path, wheel_dir: Path) -> bool:
             fail(f"offline wheelhouse lacks the official cp310/aarch64 {distribution} wheel")
             success = False
 
+    if require_manifest or (
+        check_existing_manifest and (wheel_dir / WHEELHOUSE_MANIFEST).is_file()
+    ):
+        success = check_wheelhouse_manifest(project_root, wheel_dir, files) and success
+
     if success:
         print(f"[ OK ] offline wheelhouse direct assets: {wheel_dir}")
     return success
@@ -145,6 +326,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--model-dir", type=Path)
     parser.add_argument("--wheel-dir", type=Path)
+    parser.add_argument("--expected-model-repo-id")
+    parser.add_argument("--expected-model-revision")
+    parser.add_argument(
+        "--require-manifests",
+        action="store_true",
+        help="require preparation manifests and validate their target, locks and SHA-256 inventory",
+    )
+    parser.add_argument(
+        "--write-wheel-manifest",
+        action="store_true",
+        help="record a wheelhouse after pip download resolved successfully",
+    )
     return parser.parse_args()
 
 
@@ -153,9 +346,26 @@ def main() -> int:
     project_root = args.project_root.resolve()
     success = True
     if args.model_dir is not None:
-        success = check_model(args.model_dir.resolve()) and success
+        success = check_model(
+            args.model_dir.resolve(),
+            expected_repo_id=args.expected_model_repo_id,
+            expected_revision=args.expected_model_revision,
+            require_manifest=args.require_manifests,
+        ) and success
     if args.wheel_dir is not None:
-        success = check_wheelhouse(project_root, args.wheel_dir.resolve()) and success
+        wheel_dir = args.wheel_dir.resolve()
+        success = check_wheelhouse(
+            project_root,
+            wheel_dir,
+            require_manifest=args.require_manifests and not args.write_wheel_manifest,
+            check_existing_manifest=not args.write_wheel_manifest,
+        ) and success
+        if args.write_wheel_manifest and success:
+            manifest_path = write_wheelhouse_manifest(project_root, wheel_dir)
+            print(f"[ OK ] wrote resolved wheelhouse manifest: {manifest_path}")
+    elif args.write_wheel_manifest:
+        fail("--write-wheel-manifest requires --wheel-dir")
+        return 2
     if args.model_dir is None and args.wheel_dir is None:
         fail("at least one of --model-dir or --wheel-dir is required")
         return 2

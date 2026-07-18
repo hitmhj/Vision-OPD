@@ -6,8 +6,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
-.venv-ascend/
 venv/
+.venv-ascend/
 
 # Editors and operating systems
 .idea/
@@ -40,8 +40,14 @@ dist/
 # Codex workspace metadata
 .agents/
 .codex/
-# ModelArts offline assets are mounted with the dataset, never committed.
-whls/*
-!whls/README.md
+# ModelArts assets and generated worker environments are prepared locally and
+# uploaded/mounted with the dataset; only their checked-in instructions remain.
+envs/*
+!envs/README.md
+
+# Legacy pre-envs/ portable asset locations. Keep these ignored so an upgrade
+# cannot accidentally stage model weights, worker wheels, or generated venvs.
 models/*
 !models/README.md
+whls/*
+!whls/README.md

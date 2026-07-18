@@ -32,8 +32,8 @@ LOCK_FILES = (
     "requirements-ascend-plugins.txt",
 )
 
-# vLLM 0.18 was published with CUDA/PyTorch-2.10 metadata.  The official
-# The vLLM-Ascend 0.18 Atlas A2 matrix deliberately replaces these generic
+# vLLM 0.18 was published with CUDA/PyTorch-2.10 metadata. The official
+# vLLM-Ascend 0.18 Atlas A2 matrix deliberately replaces these generic
 # CUDA/plugin metadata dependencies.
 # Only these owner/dependency pairs may be ignored; every other pip-check
 # failure remains fatal.
@@ -340,6 +340,7 @@ def check_static(project_root: Path) -> bool:
         "scripts/ascend_env.sh",
         "scripts/install_ascend.sh",
         "scripts/check_ascend_assets.py",
+        "scripts/prepare_ascend_assets.sh",
         "scripts/prepare_data.py",
         "scripts/bootstrap_vision_opd_ascend.sh",
         "scripts/start_vision_opd_ascend.sh",
@@ -432,6 +433,9 @@ def check_static(project_root: Path) -> bool:
         if stage not in job_entry:
             fail(f"unified Ascend lifecycle is missing stage: {stage}")
             success = False
+    if "prepare_ascend_assets.sh" in job_entry:
+        fail("training entry must not download or prepare portable assets")
+        success = False
     dependency_installer = (project_root / "scripts/install_ascend.sh").read_text(encoding="utf-8")
     for stage in ("VOPD_VENV_DIR", "VOPD_ASCEND_REQUIREMENTS", "VOPD_BOOTSTRAP_PYTHON"):
         if stage not in dependency_installer:
@@ -450,6 +454,7 @@ def check_static(project_root: Path) -> bool:
         "--constraint",
         "--dry-run",
         "check_ascend_assets.py",
+        "--require-manifests",
         "--only-binary=:all:",
         "--no-deps",
         '--editable "$PROJECT_ROOT"',
@@ -457,6 +462,26 @@ def check_static(project_root: Path) -> bool:
     ):
         if required not in dependency_installer:
             fail(f"dependency installer is missing lifecycle operation: {required}")
+            success = False
+
+    asset_preparer = (project_root / "scripts/prepare_ascend_assets.sh").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "VOPD_PREPARE_ONLINE",
+        "VOPD_INTERNAL_WHEEL_DIRS",
+        "VOPD_MODEL_SOURCE_DIR",
+        "--online",
+        "--check-only",
+        "snapshot_download",
+        "pip download",
+        "check_ascend_assets.py",
+        "--write-wheel-manifest",
+        "--require-manifests",
+        "--expected-model-repo-id",
+    ):
+        if required not in asset_preparer:
+            fail(f"portable asset preparer is missing: {required}")
             success = False
 
     runtime_loader = (project_root / "scripts/ascend_env.sh").read_text(encoding="utf-8")
@@ -520,6 +545,7 @@ def check_static(project_root: Path) -> bool:
         success = False
     env_template = (project_root / "vision_opd_ascend.env").read_text(encoding="utf-8")
     for variable in (
+        "VOPD_ASSET_ROOT",
         "VOPD_MODEL_PATH",
         "VOPD_REQUIRE_LOCAL_MODEL",
         "VOPD_HF_OFFLINE",
@@ -537,6 +563,16 @@ def check_static(project_root: Path) -> bool:
         "VOPD_ASCEND_PLUGIN_REQUIREMENTS",
         "VOPD_BOOTSTRAP_PYTHON",
         "VOPD_LOCAL_WHEEL_DIR",
+        "VOPD_PREPARE_ONLINE",
+        "VOPD_INTERNAL_WHEEL_DIRS",
+        "VOPD_MODEL_SOURCE_DIR",
+        "VOPD_MODEL_REPO_ID",
+        "VOPD_MODEL_REVISION",
+        "DO_NOT_TRACK",
+        "HF_HUB_DISABLE_TELEMETRY",
+        "VLLM_NO_USAGE_STATS",
+        "RAY_USAGE_STATS_ENABLED",
+        "VOPD_PREPARE_PIP_INDEX_URL",
         "VOPD_PIP_INDEX_URL",
         "VOPD_PIP_EXTRA_INDEX_URL",
         "VOPD_PIP_TRUSTED_HOST",
@@ -553,14 +589,44 @@ def check_static(project_root: Path) -> bool:
             fail(f"Ascend lifecycle configuration is missing: {variable}")
             success = False
     offline_defaults = (
+        'VOPD_ASSET_ROOT="${VOPD_ASSET_ROOT:-envs}"',
+        'VOPD_PREPARE_ONLINE="${VOPD_PREPARE_ONLINE:-0}"',
         'VOPD_PIP_NO_INDEX="${VOPD_PIP_NO_INDEX:-1}"',
         'VOPD_HF_OFFLINE="${VOPD_HF_OFFLINE:-1}"',
         'VOPD_REQUIRE_LOCAL_MODEL="${VOPD_REQUIRE_LOCAL_MODEL:-1}"',
         'VOPD_EXPECTED_CANN_VERSION="${VOPD_EXPECTED_CANN_VERSION:-8.5.1}"',
+        'DO_NOT_TRACK="${DO_NOT_TRACK:-1}"',
+        'HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"',
+        'VLLM_NO_USAGE_STATS="${VLLM_NO_USAGE_STATS:-1}"',
+        'RAY_USAGE_STATS_ENABLED="${RAY_USAGE_STATS_ENABLED:-0}"',
     )
     for default in offline_defaults:
         if default not in env_template:
             fail(f"Ascend production default is not locked: {default}")
+            success = False
+    revision_match = re.search(
+        r'VOPD_MODEL_REVISION="\$\{VOPD_MODEL_REVISION:-([^}]+)\}"', env_template
+    )
+    if revision_match is None or revision_match.group(1) == "main" or not re.fullmatch(
+        r"[0-9a-f]{40}", revision_match.group(1)
+    ):
+        fail("VOPD_MODEL_REVISION must default to an immutable 40-character commit hash")
+        success = False
+
+    rank_position = job_entry.find('if [[ "${VOPD_SINGLE_DRIVER_GUARD:-1}" == "1" ]]')
+    worker_position = job_entry.find('command -v npu-smi')
+    model_position = job_entry.find('check_ascend_assets.py')
+    installer_position = job_entry.find('install_ascend.sh')
+    if min(rank_position, worker_position, model_position, installer_position) < 0 or not (
+        rank_position < worker_position < model_position < installer_position
+    ):
+        fail("job entry order must be rank guard -> NPU worker guard -> model check -> install")
+        success = False
+
+    gitignore = (project_root / ".gitignore").read_text(encoding="utf-8")
+    for legacy_asset_rule in (".venv-ascend/", "models/*", "whls/*"):
+        if legacy_asset_rule not in gitignore:
+            fail(f".gitignore lacks the legacy asset safety rule: {legacy_asset_rule}")
             success = False
     npu_patch = (project_root / "verl/models/transformers/npu_patch.py").read_text(encoding="utf-8")
     if "_disable_qwen3_5_cuda_fast_path" not in npu_patch:

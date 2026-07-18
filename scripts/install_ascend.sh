@@ -25,7 +25,7 @@ _vopd_resolve_path() {
     fi
 }
 
-VENV_DIR="$(_vopd_resolve_path "${VOPD_VENV_DIR:-.venv-ascend}")"
+VENV_DIR="$(_vopd_resolve_path "${VOPD_VENV_DIR:-envs/runtime/.venv-ascend}")"
 REQUIREMENTS_FILE="$(_vopd_resolve_path "${VOPD_ASCEND_REQUIREMENTS:-requirements-ascend.txt}")"
 CORE_REQUIREMENTS_FILE="$(_vopd_resolve_path "${VOPD_ASCEND_CORE_REQUIREMENTS:-requirements-ascend-core.txt}")"
 PLUGIN_REQUIREMENTS_FILE="$(_vopd_resolve_path "${VOPD_ASCEND_PLUGIN_REQUIREMENTS:-requirements-ascend-plugins.txt}")"
@@ -172,7 +172,8 @@ fi
 if [[ "${VOPD_PIP_NO_INDEX:-0}" == "1" ]]; then
     "$BOOTSTRAP_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
         --project-root "$PROJECT_ROOT" \
-        --wheel-dir "$LOCAL_WHEEL_DIR"
+        --wheel-dir "$LOCAL_WHEEL_DIR" \
+        --require-manifests
 fi
 
 # Upgrade the isolated installer from the declared source as well. In offline

@@ -44,15 +44,29 @@ The Ascend path is separate from the CUDA requirements above. Dependency
 installation runs on the real NPU worker, so the WebStudio CPU architecture and
 Python version do not affect wheel selection. Configure CANN/NNAL paths,
 lifecycle switches and hyperparameters in
-[`vision_opd_ascend.env`](vision_opd_ascend.env), then use one entry:
+[`vision_opd_ascend.env`](vision_opd_ascend.env). Asset preparation and training
+are deliberately separate:
 
 ```bash
+# Run once on the Python 3.10/aarch64 platform worker. This default is offline:
+# it reuses the platform wheel directory and/or an already downloaded model.
+VOPD_INTERNAL_WHEEL_DIRS=/path/to/internal/whls \
+VOPD_MODEL_SOURCE_DIR=/path/to/Qwen3.5-4B \
+bash scripts/prepare_ascend_assets.sh
+
+# Run for every training job after assets are ready.
 bash scripts/start_vision_opd_ascend.sh
 ```
 
+If the preparation worker is explicitly allowed to reach Hugging Face, Huawei
+OBS and the configured Python index, replace the first command with
+`bash scripts/prepare_ascend_assets.sh --online`. The training entry remains
+offline and never invokes the preparation script.
+
 The entry exports the configuration as real environment variables and performs
-the complete lifecycle: choose Python 3.10 on the aarch64 NPU worker, create or
-reuse `.venv-ascend`, install the official CANN 8.5.1/vLLM-Ascend 0.18 Python
+the complete training lifecycle: choose Python 3.10 on the aarch64 NPU worker,
+create or reuse `envs/runtime/.venv-ascend`, install the official CANN
+8.5.1/vLLM-Ascend 0.18 Python
 stack, load CANN/NNAL, prepare data, preflight, train, save checkpoints, and
 optionally merge the latest checkpoint. ModelArts-injected `VOPD_*` values take
 precedence over file defaults.
@@ -64,13 +78,17 @@ the vLLM hardware-plugin lock. The fixed unit is CANN 8.5.1, torch 2.9.0,
 
 Production installation is fully offline by default and uses
 `--no-index --find-links`. Put the complete Python 3.10/aarch64 wheelhouse in
-the project-relative `whls` directory, or set `VOPD_LOCAL_WHEEL_DIR` to its
-mounted location. The launcher validates direct wheels and pip resolves the
-complete environment with `--dry-run` before installing the NPU/runtime stack.
+the project-relative `envs/wheels/cp310-aarch64` directory, or set
+`VOPD_LOCAL_WHEEL_DIR` to its mounted location. Asset preparation writes a
+SHA-256 inventory only after pip resolves the complete dependency closure. The
+launcher verifies that manifest and repeats resolution with `pip --dry-run`
+before installing the NPU/runtime stack.
 
 The production entry also defaults to Hugging Face offline mode. Mount the
-model weights under `models/Qwen3.5-4B`, or set `VOPD_MODEL_PATH` to another
-local directory.
+model weights under `envs/models/Qwen3.5-4B`, or set `VOPD_MODEL_PATH` to
+another local directory. Preparation records the immutable model revision in
+the model directory; the training entry rejects a missing or mismatched asset
+manifest.
 With `VOPD_REQUIRE_LOCAL_MODEL=1` and `VOPD_HF_OFFLINE=1` (the defaults), a
 missing model or dataset fails immediately instead of attempting an external
 download.
