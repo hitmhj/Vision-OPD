@@ -118,7 +118,7 @@ fi
 
 ASSET_ROOT="$(_vopd_resolve_path "${VOPD_ASSET_ROOT:-envs}")"
 MODEL_DIR="$(_vopd_resolve_path "${VOPD_MODEL_PATH:-envs/models/Qwen3.5-4B}")"
-TARGET_PYTHON="${VOPD_PREPARE_TARGET_PYTHON:-3.11}"
+TARGET_PYTHON="${VOPD_PREPARE_TARGET_PYTHON:-3.10}"
 case "$TARGET_PYTHON" in
     3.10|3.11) ;;
     *)

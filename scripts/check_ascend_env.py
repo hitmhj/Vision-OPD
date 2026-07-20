@@ -95,6 +95,10 @@ def fail(message: str) -> None:
     print(f"[FAIL] {message}", file=sys.stderr)
 
 
+def warn(message: str) -> None:
+    print(f"[WARN] {message}", file=sys.stderr)
+
+
 def ok(message: str) -> None:
     print(f"[ OK ] {message}")
 
@@ -641,12 +645,13 @@ def check_static(project_root: Path) -> bool:
         'VOPD_ASSET_ROOT="${VOPD_ASSET_ROOT:-envs}"',
         'VOPD_PREPARE_ONLINE="${VOPD_PREPARE_ONLINE:-0}"',
         'VOPD_RUN_MODE="${VOPD_RUN_MODE:-train}"',
-        'VOPD_TARGET_PYTHON="${VOPD_TARGET_PYTHON:-auto}"',
-        'VOPD_PREPARE_TARGET_PYTHON="${VOPD_PREPARE_TARGET_PYTHON:-3.11}"',
+        'VOPD_TARGET_PYTHON="${VOPD_TARGET_PYTHON:-3.10}"',
+        'VOPD_PREPARE_TARGET_PYTHON="${VOPD_PREPARE_TARGET_PYTHON:-3.10}"',
         'VOPD_PIP_NO_INDEX="${VOPD_PIP_NO_INDEX:-1}"',
         'VOPD_HF_OFFLINE="${VOPD_HF_OFFLINE:-1}"',
         'VOPD_REQUIRE_LOCAL_MODEL="${VOPD_REQUIRE_LOCAL_MODEL:-1}"',
         'VOPD_EXPECTED_CANN_VERSION="${VOPD_EXPECTED_CANN_VERSION:-8.5.1}"',
+        'VOPD_REQUIRE_CANN_VERSION_MATCH="${VOPD_REQUIRE_CANN_VERSION_MATCH:-0}"',
         'DO_NOT_TRACK="${DO_NOT_TRACK:-1}"',
         'HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"',
         'VLLM_NO_USAGE_STATS="${VLLM_NO_USAGE_STATS:-1}"',
@@ -731,8 +736,15 @@ def check_runtime(project_root: Path, min_npus: int) -> bool:
     expected_cann = os.environ.get("VOPD_EXPECTED_CANN_VERSION", "8.5.1")
     detected_cann = os.environ.get("VOPD_DETECTED_CANN_VERSION")
     if detected_cann != expected_cann:
-        fail(f"CANN version is {detected_cann or 'unknown'}; expected exactly {expected_cann}")
-        success = False
+        message = (
+            f"CANN version is {detected_cann or 'unknown'}; "
+            f"tested baseline is {expected_cann}"
+        )
+        if os.environ.get("VOPD_REQUIRE_CANN_VERSION_MATCH", "0") == "1":
+            fail(message + " and strict matching is enabled")
+            success = False
+        else:
+            warn(message + "; continuing because runtime capability checks are authoritative")
     else:
         ok(f"CANN {detected_cann}")
 

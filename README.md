@@ -49,8 +49,7 @@ are deliberately separate:
 
 ```bash
 # Run once in WebStudio or another preparation host. This default is offline:
-# It defaults to cp311/aarch64 for the current CANN 8.5 worker image. Set
-# VOPD_PREPARE_TARGET_PYTHON=3.10 only for a confirmed Python 3.10 worker.
+# The current deployment target is CPython 3.10/aarch64 (cp310).
 VOPD_INTERNAL_WHEEL_DIRS=/path/to/internal/whls \
 VOPD_MODEL_SOURCE_DIR=/path/to/Qwen3.5-4B \
 bash scripts/prepare_ascend_assets.sh
@@ -66,8 +65,8 @@ worker network access: the training entry remains offline and never invokes
 the preparation script.
 
 The entry exports the configuration as real environment variables and performs
-the complete training lifecycle: fingerprint the worker, choose an available
-Python 3.10/3.11 with a matching wheelhouse, create or reuse a versioned venv,
+the complete training lifecycle: fingerprint the worker, select the configured
+Python 3.10 target and matching cp310 wheelhouse, create or reuse a versioned venv,
 install the official CANN
 8.5.1/vLLM-Ascend 0.18 Python
 stack, load CANN/NNAL, prepare data, preflight, train, save checkpoints, and
@@ -78,6 +77,10 @@ Installation is split into the official binary lock, a generic runtime lock and
 the vLLM hardware-plugin lock. The fixed unit is CANN 8.5.1, torch 2.9.0,
 `torch-npu==2.9.0.post1+git4c901a4`,
 `triton-ascend==3.2.0.dev20260322`, and vLLM/vLLM-Ascend 0.18.0.
+The tested CANN baseline remains 8.5.1, but a different detected CANN version
+is a warning by default. Actual torch-npu forward/backward, vLLM-Ascend and Ray
+capability checks decide whether execution may continue. Set
+`VOPD_REQUIRE_CANN_VERSION_MATCH=1` only to restore the strict hard stop.
 
 Production installation is fully offline by default and uses
 `--no-index --find-links`. Put the complete ABI-matched wheelhouse in

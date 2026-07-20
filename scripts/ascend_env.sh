@@ -74,15 +74,23 @@ VOPD_DETECTED_CANN_VERSION="$(_vopd_detect_cann_version)"
 export VOPD_DETECTED_CANN_VERSION
 if [[ -n "${VOPD_EXPECTED_CANN_VERSION:-}" ]]; then
     if [[ -z "$VOPD_DETECTED_CANN_VERSION" ]]; then
-        if [[ "${VOPD_REQUIRE_CANN_VERSION_MATCH:-1}" == "1" ]]; then
+        if [[ "${VOPD_REQUIRE_CANN_VERSION_MATCH:-0}" == "1" ]]; then
             echo "Cannot determine CANN version after sourcing: $CANN_ENV_SCRIPT" >&2
             echo "Vision-OPD requires CANN ${VOPD_EXPECTED_CANN_VERSION}." >&2
             return 1
+        else
+            echo "WARNING: CANN version could not be determined; expected baseline is ${VOPD_EXPECTED_CANN_VERSION}." >&2
+            echo "WARNING: continuing to torch_npu, vLLM-Ascend and NPU capability checks." >&2
         fi
     elif [[ "$VOPD_DETECTED_CANN_VERSION" != "$VOPD_EXPECTED_CANN_VERSION" ]]; then
-        echo "CANN version mismatch: detected $VOPD_DETECTED_CANN_VERSION, expected $VOPD_EXPECTED_CANN_VERSION." >&2
-        echo "Do not mix the vLLM-Ascend 0.18.0/CANN 8.5.1 dependency line with another CANN runtime." >&2
-        return 1
+        if [[ "${VOPD_REQUIRE_CANN_VERSION_MATCH:-0}" == "1" ]]; then
+            echo "CANN version mismatch: detected $VOPD_DETECTED_CANN_VERSION, expected $VOPD_EXPECTED_CANN_VERSION." >&2
+            echo "Strict CANN version policy is enabled; refusing an unverified runtime combination." >&2
+            return 1
+        else
+            echo "WARNING: CANN version mismatch: detected $VOPD_DETECTED_CANN_VERSION, tested baseline $VOPD_EXPECTED_CANN_VERSION." >&2
+            echo "WARNING: version mismatch is not fatal; actual NPU capability checks decide whether training continues." >&2
+        fi
     else
         echo "CANN version verified: $VOPD_DETECTED_CANN_VERSION"
     fi
