@@ -50,6 +50,9 @@ ALLOWED_METADATA_DIVERGENCES = {
         "transformers",
     },
     "vllm-ascend": {
+        # Optional source-only backend for suffix speculative decoding. The
+        # Vision-OPD rollout does not enable that feature.
+        "arctic-inference",
         "torch-npu",
         "triton-ascend",
     },
@@ -383,6 +386,9 @@ def check_static(project_root: Path) -> bool:
         if re.search(rf"(?m)^{re.escape(distribution)}(?:==|>=|<=|~=)", requirements):
             fail(f"requirements-ascend.txt includes CUDA-only package: {distribution}")
             success = False
+    if re.search(r"(?m)^arctic-inference==", requirements):
+        fail("Ascend lock includes the source-only optional arctic-inference backend")
+        success = False
     forbidden_sources = (
         "download.pytorch.org",
         "mirrors.huaweicloud.com/ascend/repos/pypi",

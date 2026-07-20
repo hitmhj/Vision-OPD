@@ -83,7 +83,10 @@ xgrammar==0.1.33
 
 # vLLM-Ascend 0.18 generic/runtime requirements. The CANN 8.5.1/PyTorch
 # binary compatibility unit lives in requirements-ascend-core.txt.
-arctic-inference==0.1.1
+# arctic-inference==0.1.1 is intentionally omitted. That release is source-only
+# and provides vLLM suffix speculative decoding, which Vision-OPD does not
+# enable. Keeping it in the portable binary-only lock makes cross-resolution
+# impossible on mirrors that correctly expose no compatible wheel.
 cmake==4.1.2
 decorator==5.2.1
 fastapi==0.123.10

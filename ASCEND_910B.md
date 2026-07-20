@@ -116,6 +116,11 @@ cp310/aarch64 `torch_npu-2.9.0.post1+git4c901a4` and
 `triton_ascend-3.2.0.dev20260322` wheels plus every direct and transitive package
 needed by the three Ascend lock files.
 
+`arctic-inference==0.1.1` is deliberately not part of the portable lock. Its
+upstream release is source-only and is used for vLLM suffix speculative
+decoding; Vision-OPD does not enable that optional decoding mode. The active
+rollout remains ordinary vLLM sampling.
+
 Model and dataset downloads are disabled in the production entry by default.
 Upload or mount Qwen3.5-4B under the default `envs/models/Qwen3.5-4B`, or inject
 `VOPD_MODEL_PATH=/mounted/model/path`. Relative injected paths are resolved
