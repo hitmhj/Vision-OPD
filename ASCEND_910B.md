@@ -138,6 +138,12 @@ because an offline ModelArts worker cannot fetch source or missing build
 dependencies. It can be enabled explicitly only when a complete local source
 build wheelhouse has been prepared.
 
+`hydra-core==1.3.2` and `omegaconf==2.3.0` require
+`antlr4-python3-runtime==4.9.*`. Version 4.9.3 is published upstream only as a
+source archive, so the online WebStudio preparation step builds it once into
+the portable `py3-none-any` wheel. The Atlas worker remains binary-only and
+offline; do not replace it with ANTLR 4.11 or newer.
+
 All repository commands derive `PROJECT_ROOT` from the startup script location.
 The Vision-OPD folder can therefore be mounted anywhere. Host firmware, driver,
 CANN and NNAL remain platform components; Python packages are installed inside

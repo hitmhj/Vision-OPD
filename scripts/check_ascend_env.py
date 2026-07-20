@@ -66,6 +66,7 @@ CUDA_ONLY_QWEN_FAST_PATHS = (
 
 RUNTIME_IMPORTS = {
     "accelerate": "accelerate",
+    "antlr4-python3-runtime": "antlr4",
     "codetiming": "codetiming",
     "datasets": "datasets",
     "hydra-core": "hydra",
@@ -480,6 +481,8 @@ def check_static(project_root: Path) -> bool:
         "--online",
         "--check-only",
         "snapshot_download",
+        "pip wheel",
+        "antlr4-python3-runtime==4.9.3",
         "pip download",
         "check_ascend_assets.py",
         "--write-wheel-manifest",

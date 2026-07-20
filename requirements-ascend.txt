@@ -7,6 +7,7 @@
 
 # Vision-OPD / verl
 accelerate==1.12.0
+antlr4-python3-runtime==4.9.3
 cloudpickle==3.1.2
 codetiming==1.4.0
 datasets==4.4.2

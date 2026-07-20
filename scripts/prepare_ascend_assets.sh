@@ -370,6 +370,35 @@ if [[ "$SKIP_WHEELS" != "1" && "$CHECK_ONLY" != "1" ]]; then
         RESOLVED_INTERNAL_WHEEL_DIRS+=("$_vopd_internal_dir")
     done
 
+    # Hydra 1.3.2 and OmegaConf 2.3.0 require ANTLR 4.9.x. Upstream publishes
+    # antlr4-python3-runtime 4.9.3 only as an sdist, so a binary-only
+    # cross-targeted pip download cannot select it. Build this architecture-
+    # independent wheel once on the online preparation host; the NPU worker
+    # still installs exclusively from the completed offline wheelhouse.
+    if [[ -z "$(find "$WHEEL_DIR" -maxdepth 1 -type f \
+            -iname 'antlr4_python3_runtime-4.9.3-py3-none-any.whl' \
+            -print -quit)" && "$ONLINE" == "1" ]]; then
+        echo "Building the pure-Python ANTLR 4.9.3 runtime wheel..."
+        _vopd_antlr_wheel_args=(
+            --disable-pip-version-check
+            --no-input
+            --timeout "${VOPD_PIP_TIMEOUT:-120}"
+            --retries "${VOPD_PIP_RETRIES:-5}"
+            --wheel-dir "$WHEEL_DIR"
+            --no-deps
+            --index-url "$VOPD_PREPARE_PIP_INDEX_URL"
+        )
+        if [[ -n "${VOPD_PREPARE_PIP_EXTRA_INDEX_URL:-}" ]]; then
+            _vopd_antlr_wheel_args+=(--extra-index-url "$VOPD_PREPARE_PIP_EXTRA_INDEX_URL")
+        fi
+        if [[ -n "${VOPD_PIP_TRUSTED_HOST:-}" ]]; then
+            _vopd_antlr_wheel_args+=(--trusted-host "$VOPD_PIP_TRUSTED_HOST")
+        fi
+        "$PREPARE_PYTHON" -m pip wheel \
+            "${_vopd_antlr_wheel_args[@]}" \
+            'antlr4-python3-runtime==4.9.3'
+    fi
+
     if [[ "$ONLINE" == "1" ]]; then
         _vopd_download_file \
             'https://vllm-ascend.obs.cn-north-4.myhuaweicloud.com/vllm-ascend/torch_npu-2.9.0.post1%2Bgit4c901a4-cp310-cp310-manylinux_2_28_aarch64.whl' \
