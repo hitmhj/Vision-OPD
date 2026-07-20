@@ -44,6 +44,12 @@ dist/
 # uploaded/mounted with the dataset; only their checked-in instructions remain.
 envs/*
 !envs/README.md
+!envs/wheels/
+envs/wheels/*
+!envs/wheels/cp310-aarch64/
+envs/wheels/cp310-aarch64/*
+!envs/wheels/cp310-aarch64/torch_npu-2.9.0.post1+git4c901a4-cp310-cp310-manylinux_2_28_aarch64.whl
+!envs/wheels/cp310-aarch64/triton_ascend-3.2.0.dev20260322-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl
 
 # Legacy pre-envs/ portable asset locations. Keep these ignored so an upgrade
 # cannot accidentally stage model weights, worker wheels, or generated venvs.
