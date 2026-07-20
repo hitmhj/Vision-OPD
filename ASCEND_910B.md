@@ -8,15 +8,16 @@ environment must not be mixed.
 
 WebStudio can edit the repository and cross-prepare portable assets, but it
 never creates the runtime venv or runs training. The production entry selects
-Python and installs dependencies on the actual NPU worker. This target is deliberately
-fixed to the observed Python 3.10/aarch64 Atlas A2 worker and creates an isolated environment at
-`VOPD_VENV_DIR` (default: `envs/runtime/.venv-ascend`).
+Python and installs dependencies on the actual NPU worker. Python 3.10 and 3.11
+are supported; the resolver prefers an interpreter that already has a complete
+matching wheelhouse and creates `envs/runtime/.venv-ascend-cp310` or
+`envs/runtime/.venv-ascend-cp311`.
 `VOPD_INSTALL_MODE=auto` reuses the
 environment only when all three Ascend lock files and the installer itself are
 unchanged.
 
 The binary stack is the official stable vLLM-Ascend 0.18.0 Atlas A2 matrix:
-CANN 8.5.1, torch/torchaudio 2.9.0, the cp310/aarch64 special
+CANN 8.5.1, torch/torchaudio 2.9.0, the ABI-matched cp310/cp311 aarch64 special
 `torch-npu==2.9.0.post1+git4c901a4` build,
 `triton-ascend==3.2.0.dev20260322`, and vLLM/vLLM-Ascend 0.18.0. Do not replace
 individual members of this compatibility unit. Common settings from the
@@ -42,10 +43,10 @@ the repository installer. `npu-smi info` must succeed.
 
 Run the asset preparation entry before the training entry. It derives every
 default from the repository root and creates `envs/models/Qwen3.5-4B`,
-`envs/wheels/cp310-aarch64`, `envs/cache` and `envs/runtime`.
+`envs/wheels/cp311-aarch64` (the current default), `envs/cache` and `envs/runtime`.
 
 The production-safe default uses no network. The preparation entry supports
-x86_64/Python 3.9 WebStudio by passing an explicit CPython 3.10/aarch64 target
+x86_64/Python 3.9 WebStudio by passing an explicit CPython 3.10/3.11 aarch64 target
 to pip. It can gather compatible wheels from one or more platform directories
 and copy a complete model snapshot:
 
@@ -55,8 +56,15 @@ VOPD_MODEL_SOURCE_DIR=/mounted/models/Qwen3.5-4B \
 bash scripts/prepare_ascend_assets.sh
 ```
 
-Compiled `cp311` and x86_64 wheels are rejected; only compatible
-`cp310/aarch64`, older `abi3/aarch64`, and universal wheels are collected. If
+Compiled wheels for the other Python ABI and all x86_64 wheels are rejected;
+only the selected cp310/cp311 aarch64, compatible `abi3/aarch64`, and universal
+wheels are collected. Select the target before preparation when necessary:
+
+```bash
+VOPD_PREPARE_TARGET_PYTHON=3.11 bash scripts/prepare_ascend_assets.sh --online
+```
+
+If
 the WebStudio or another preparation host has approved network access, use:
 
 ```bash
@@ -72,7 +80,7 @@ successful preparation writes a lock fingerprint
 and SHA-256 inventory into the wheelhouse and records the immutable Qwen model
 revision. `--check-only` validates both manifests without contacting a host.
 
-The generated `.venv-ascend` is deliberately not a portable asset: the start
+The generated `.venv-ascend-cp310`/`.venv-ascend-cp311` is deliberately not a portable asset: the start
 entry creates it on the real worker because virtual environments contain
 host-specific paths and binary ABIs.
 
@@ -89,20 +97,23 @@ bash scripts/start_vision_opd_ascend.sh
 The same entry performs, in order:
 
 1. source the configuration and export `VOPD_*` variables;
-2. call `scripts/install_ascend.sh` by project-relative path; that installer
-   selects a worker-side Python, creates/reuses the isolated venv, installs the
+2. fingerprint the immutable worker and resolve Python, ABI wheelhouse and venv
+   as one profile;
+3. call `scripts/install_ascend.sh` by project-relative path; that installer
+   creates/reuses the isolated venv, installs the
    CANN-8.5.1 core, generic runtime, vLLM plugin wheels and editable Vision-OPD
    package in that order, then validates versions, imports and dependency
    metadata;
-3. source the configured CANN, NNAL/ATB and ASDSIP scripts exactly once;
-4. reuse or prepare data according to `VOPD_PREPARE_DATA_IF_MISSING`;
-5. run NPU and configuration preflight checks;
-6. train and save FSDP checkpoints;
-7. optionally merge the latest checkpoint according to `VOPD_AUTO_MERGE`.
+4. source the configured CANN, NNAL/ATB and ASDSIP scripts exactly once;
+5. reuse or prepare data according to `VOPD_PREPARE_DATA_IF_MISSING`;
+6. run NPU and configuration preflight checks;
+7. train and save FSDP checkpoints;
+8. optionally merge the latest checkpoint according to `VOPD_AUTO_MERGE`.
 
 Production installation is offline by default. Mount a complete wheelhouse for
-Python 3.10/aarch64, then set `VOPD_LOCAL_WHEEL_DIR` if it is not the default
-project-relative `envs/wheels/cp310-aarch64` directory.
+the worker Python ABI. With `VOPD_TARGET_PYTHON=auto`, the resolver selects
+`envs/wheels/cp310-aarch64` or `envs/wheels/cp311-aarch64` by manifest. Set
+`VOPD_LOCAL_WHEEL_DIR` only for a nonstandard mounted directory.
 `VOPD_PIP_NO_INDEX=1` is already the default.
 The earlier LLaMAFactory wheelhouse is not complete for Vision-OPD and cannot
 be used as that directory.
@@ -112,7 +123,7 @@ configuration, and clears inherited `PIP_EXTRA_INDEX_URL`/`PIP_FIND_LINKS`.
 It validates the resolved wheelhouse manifest and performs `pip --dry-run` resolution before
 installing the NPU stack. Neither PyTorch, Huawei, Hugging Face nor GitHub is
 contacted by the production default. The wheelhouse must include the exact
-cp310/aarch64 `torch_npu-2.9.0.post1+git4c901a4` and
+ABI-matched cp310/cp311 aarch64 `torch_npu-2.9.0.post1+git4c901a4` and
 `triton_ascend-3.2.0.dev20260322` wheels plus every direct and transitive package
 needed by the three Ascend lock files.
 
@@ -185,6 +196,27 @@ The unified entry intentionally supports exactly one node. Its default is one
 node exposing eight 910B NPUs; `MA_NUM_GPUS` may override the card count. A
 multi-node job is rejected before installation or training because it needs a
 separate Ray head/worker bootstrap.
+
+### Fixed-entry staged validation
+
+The platform command never changes:
+
+```bash
+bash scripts/start_vision_opd_ascend.sh
+```
+
+Set one job environment variable to choose the gate:
+
+| `VOPD_RUN_MODE` | Last completed stage |
+| --- | --- |
+| `probe` | worker/Python/CANN/glibc/NPU fingerprint; no installation |
+| `dependencies` | isolated offline dependency installation and import validation |
+| `preflight` | model/data integrity plus NPU BF16 backward and Ray resource checks |
+| `smoke` | one reduced Vision-OPD optimization step and checkpoint |
+| `train` | full configured training lifecycle (default) |
+
+Move through these gates on a new image. A failure remains at the smallest
+relevant stage and the next run reuses the verified venv and assets.
 
 ## Data and training
 

@@ -159,7 +159,14 @@ def version_tuple(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in value.split("."))
 
 
-def wheel_is_cp310_aarch64_compatible(filename: str) -> bool:
+def parse_python_version(value: str) -> tuple[int, int]:
+    match = re.fullmatch(r"(3)\.(10|11)", value)
+    if match is None:
+        raise ValueError("python target must be 3.10 or 3.11")
+    return int(match.group(1)), int(match.group(2))
+
+
+def wheel_is_target_compatible(filename: str, target: tuple[int, int]) -> bool:
     """Check wheel tags without importing packaging on the preparation host."""
     if not filename.lower().endswith(".whl"):
         return False
@@ -177,31 +184,34 @@ def wheel_is_cp310_aarch64_compatible(filename: str) -> bool:
     for tag in python_tags:
         if tag == "py3" and "none" in abi_tags:
             return True
-        # pip's CPython 3.10 compatible tag set includes pure-Python wheels
+        # pip's compatible tag set includes pure-Python wheels
         # tagged for an earlier Python 3 minor (for example py37-none-any).
         # These contain no native ABI, while py311+ remains incompatible.
         py_match = re.fullmatch(r"py(\d)(\d+)", tag)
         if py_match is not None and "none" in abi_tags:
             py_version = (int(py_match.group(1)), int(py_match.group(2)))
-            if py_version[0] == 3 and py_version <= (3, 10):
+            if py_version[0] == 3 and py_version <= target:
                 return True
         match = re.fullmatch(r"cp(\d)(\d+)", tag)
         if match is None:
             continue
         version = (int(match.group(1)), int(match.group(2)))
-        if version == (3, 10) and any(abi in {"cp310", "abi3", "none"} for abi in abi_tags):
+        target_abi = f"cp{target[0]}{target[1]}"
+        if version == target and any(abi in {target_abi, "abi3", "none"} for abi in abi_tags):
             return True
-        if version <= (3, 10) and "abi3" in abi_tags:
+        if version <= target and "abi3" in abi_tags:
             return True
     return False
 
 
-def write_wheelhouse_manifest(project_root: Path, wheel_dir: Path) -> Path:
+def write_wheelhouse_manifest(
+    project_root: Path, wheel_dir: Path, python_version: str
+) -> Path:
     wheel_paths = sorted(path for path in wheel_dir.iterdir() if path.suffix.lower() == ".whl")
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "resolution_complete": True,
-        "python": "3.10",
+        "python": python_version,
         "platform": "aarch64",
         "requirements_sha256": requirements_digest(project_root),
         "wheels": [
@@ -220,7 +230,9 @@ def write_wheelhouse_manifest(project_root: Path, wheel_dir: Path) -> Path:
     return manifest_path
 
 
-def check_wheelhouse_manifest(project_root: Path, wheel_dir: Path, files: list[str]) -> bool:
+def check_wheelhouse_manifest(
+    project_root: Path, wheel_dir: Path, files: list[str], python_version: str
+) -> bool:
     manifest_path = wheel_dir / WHEELHOUSE_MANIFEST
     if not manifest_path.is_file():
         fail(
@@ -231,10 +243,10 @@ def check_wheelhouse_manifest(project_root: Path, wheel_dir: Path, files: list[s
 
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("schema") != 1 or manifest.get("resolution_complete") is not True:
+        if manifest.get("schema") not in {1, 2} or manifest.get("resolution_complete") is not True:
             raise ValueError("unsupported schema or incomplete pip resolution")
-        if manifest.get("python") != "3.10" or manifest.get("platform") != "aarch64":
-            raise ValueError("manifest target must be Python 3.10/aarch64")
+        if manifest.get("python") != python_version or manifest.get("platform") != "aarch64":
+            raise ValueError(f"manifest target must be Python {python_version}/aarch64")
         if manifest.get("requirements_sha256") != requirements_digest(project_root):
             raise ValueError("requirements locks changed after the wheelhouse was resolved")
         entries = manifest["wheels"]
@@ -278,6 +290,7 @@ def check_wheelhouse(
     project_root: Path,
     wheel_dir: Path,
     *,
+    python_version: str,
     require_manifest: bool = False,
     check_existing_manifest: bool = True,
 ) -> bool:
@@ -305,12 +318,13 @@ def check_wheelhouse(
         )
         success = False
 
+    target = parse_python_version(python_version)
     incompatible_wheels = [
-        path.name for path in wheel_paths if not wheel_is_cp310_aarch64_compatible(path.name)
+        path.name for path in wheel_paths if not wheel_is_target_compatible(path.name, target)
     ]
     if incompatible_wheels:
         fail(
-            "wheelhouse contains wheels incompatible with CPython 3.10/aarch64: "
+            f"wheelhouse contains wheels incompatible with CPython {python_version}/aarch64: "
             + ", ".join(incompatible_wheels[:20])
         )
         success = False
@@ -343,25 +357,28 @@ def check_wheelhouse(
         )
         success = False
 
+    python_tag = f"cp{target[0]}{target[1]}"
     required_worker_wheels = {
         "torch-npu": re.compile(
-            r"^torch_npu-2\.9\.0\.post1\+git4c901a4-cp310-cp310-.*aarch64\.whl$",
+            rf"^torch_npu-2\.9\.0\.post1\+git4c901a4-{python_tag}-{python_tag}-.*aarch64\.whl$",
             re.IGNORECASE,
         ),
         "triton-ascend": re.compile(
-            r"^triton_ascend-3\.2\.0\.dev20260322-cp310-cp310-.*aarch64\.whl$",
+            rf"^triton_ascend-3\.2\.0\.dev20260322-{python_tag}-{python_tag}-.*aarch64\.whl$",
             re.IGNORECASE,
         ),
     }
     for distribution, pattern in required_worker_wheels.items():
         if not any(pattern.fullmatch(name) for name in files):
-            fail(f"offline wheelhouse lacks the official cp310/aarch64 {distribution} wheel")
+            fail(f"offline wheelhouse lacks the official {python_tag}/aarch64 {distribution} wheel")
             success = False
 
     if require_manifest or (
         check_existing_manifest and (wheel_dir / WHEELHOUSE_MANIFEST).is_file()
     ):
-        success = check_wheelhouse_manifest(project_root, wheel_dir, files) and success
+        success = check_wheelhouse_manifest(
+            project_root, wheel_dir, files, python_version
+        ) and success
 
     if success:
         print(f"[ OK ] offline wheelhouse direct assets: {wheel_dir}")
@@ -375,6 +392,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wheel-dir", type=Path)
     parser.add_argument("--expected-model-repo-id")
     parser.add_argument("--expected-model-revision")
+    parser.add_argument(
+        "--python-version",
+        default="3.10",
+        choices=("3.10", "3.11"),
+        help="target worker Python used to validate an ABI-specific wheelhouse",
+    )
     parser.add_argument(
         "--require-manifests",
         action="store_true",
@@ -404,11 +427,14 @@ def main() -> int:
         success = check_wheelhouse(
             project_root,
             wheel_dir,
+            python_version=args.python_version,
             require_manifest=args.require_manifests and not args.write_wheel_manifest,
             check_existing_manifest=not args.write_wheel_manifest,
         ) and success
         if args.write_wheel_manifest and success:
-            manifest_path = write_wheelhouse_manifest(project_root, wheel_dir)
+            manifest_path = write_wheelhouse_manifest(
+                project_root, wheel_dir, args.python_version
+            )
             print(f"[ OK ] wrote resolved wheelhouse manifest: {manifest_path}")
     elif args.write_wheel_manifest:
         fail("--write-wheel-manifest requires --wheel-dir")

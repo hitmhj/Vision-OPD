@@ -25,7 +25,6 @@ _vopd_resolve_path() {
     fi
 }
 
-VENV_DIR="$(_vopd_resolve_path "${VOPD_VENV_DIR:-envs/runtime/.venv-ascend}")"
 REQUIREMENTS_FILE="$(_vopd_resolve_path "${VOPD_ASCEND_REQUIREMENTS:-requirements-ascend.txt}")"
 CORE_REQUIREMENTS_FILE="$(_vopd_resolve_path "${VOPD_ASCEND_CORE_REQUIREMENTS:-requirements-ascend-core.txt}")"
 PLUGIN_REQUIREMENTS_FILE="$(_vopd_resolve_path "${VOPD_ASCEND_PLUGIN_REQUIREMENTS:-requirements-ascend-plugins.txt}")"
@@ -38,35 +37,6 @@ for _vopd_lock_file in "$REQUIREMENTS_FILE" "$CORE_REQUIREMENTS_FILE" "$PLUGIN_R
     fi
 done
 
-_vopd_python_supported() {
-    "$1" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 10) else 1)' \
-        >/dev/null 2>&1
-}
-
-_vopd_select_bootstrap_python() {
-    local candidate
-    if [[ -n "${VOPD_BOOTSTRAP_PYTHON:-}" ]]; then
-        if [[ ! -x "$VOPD_BOOTSTRAP_PYTHON" ]] || ! _vopd_python_supported "$VOPD_BOOTSTRAP_PYTHON"; then
-            echo "VOPD_BOOTSTRAP_PYTHON must be an executable Python 3.10: $VOPD_BOOTSTRAP_PYTHON" >&2
-            return 1
-        fi
-        printf '%s\n' "$VOPD_BOOTSTRAP_PYTHON"
-        return 0
-    fi
-
-    for candidate in python3.10 python3 python; do
-        if command -v "$candidate" >/dev/null 2>&1 && _vopd_python_supported "$candidate"; then
-            command -v "$candidate"
-            return 0
-        fi
-    done
-
-    echo "No supported Python was found on the NPU worker." >&2
-    echo "Use the ModelArts Python 3.10 worker environment, or inject VOPD_BOOTSTRAP_PYTHON." >&2
-    return 1
-}
-
-BOOTSTRAP_PYTHON="$(_vopd_select_bootstrap_python)"
 MACHINE="$(uname -m)"
 if [[ "$MACHINE" != "aarch64" ]]; then
     echo "Unsupported training worker architecture: $MACHINE (expected aarch64 for Atlas 910B)." >&2
@@ -74,10 +44,41 @@ if [[ "$MACHINE" != "aarch64" ]]; then
     exit 2
 fi
 
+# Resolve Python, ABI-specific wheelhouse and versioned venv as one unit. The
+# public entry normally sources this first; sourcing it again is guarded.
+# shellcheck source=resolve_ascend_runtime.sh
+source "$PROJECT_ROOT/scripts/resolve_ascend_runtime.sh"
+BOOTSTRAP_PYTHON="$VOPD_BOOTSTRAP_PYTHON"
+VENV_DIR="$VOPD_VENV_DIR"
+
+_vopd_python_supported() {
+    "$1" -c 'import os, sys; expected=tuple(map(int, os.environ["VOPD_PYTHON_VERSION"].split("."))); raise SystemExit(0 if sys.version_info[:2] == expected else 1)' \
+        >/dev/null 2>&1
+}
+
+_vopd_glibc_version="$(ldd --version 2>/dev/null | head -n 1 | grep -Eo '[0-9]+\.[0-9]+' | tail -n 1 || true)"
+if [[ -n "${VOPD_MIN_GLIBC:-}" && -n "$_vopd_glibc_version" ]]; then
+    if ! "$BOOTSTRAP_PYTHON" - "$_vopd_glibc_version" "$VOPD_MIN_GLIBC" <<'PY'
+import sys
+actual = tuple(map(int, sys.argv[1].split(".")))
+minimum = tuple(map(int, sys.argv[2].split(".")))
+raise SystemExit(0 if actual >= minimum else 1)
+PY
+    then
+        echo "Worker glibc $_vopd_glibc_version is older than required ${VOPD_MIN_GLIBC}." >&2
+        echo "The prebuilt vLLM 0.18 aarch64 wheel requires a newer worker image." >&2
+        exit 2
+    fi
+fi
+
 echo "Vision-OPD dependency target"
 echo "  worker_arch:      $MACHINE"
 echo "  bootstrap_python: $BOOTSTRAP_PYTHON ($($BOOTSTRAP_PYTHON --version 2>&1))"
+echo "  python_target:    $VOPD_PYTHON_VERSION ($VOPD_PYTHON_TAG)"
 echo "  venv:             $VENV_DIR"
+echo "  wheelhouse:       $VOPD_LOCAL_WHEEL_DIR"
+echo "  stack_profile:    $VOPD_STACK_PROFILE"
+echo "  glibc:            ${_vopd_glibc_version:-unknown} (minimum ${VOPD_MIN_GLIBC:-unset})"
 echo "  runtime_lock:     $REQUIREMENTS_FILE"
 echo "  npu_core_lock:    $CORE_REQUIREMENTS_FILE"
 echo "  plugin_lock:      $PLUGIN_REQUIREMENTS_FILE"
@@ -106,7 +107,7 @@ for name in sys.argv[1:]:
     digest.update(b"\0")
 print(digest.hexdigest())
 ' "$REQUIREMENTS_FILE" "$CORE_REQUIREMENTS_FILE" "$PLUGIN_REQUIREMENTS_FILE" "$0")"
-INSTALL_FINGERPRINT="schema=5;requirements=${REQUIREMENTS_SHA};python=$($BOOTSTRAP_PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")');arch=${MACHINE}"
+INSTALL_FINGERPRINT="schema=6;requirements=${REQUIREMENTS_SHA};python=${VOPD_PYTHON_VERSION};arch=${MACHINE};profile=${VOPD_STACK_PROFILE};cann=${VOPD_EXPECTED_CANN_VERSION:-unset}"
 MARKER_FILE="$VENV_DIR/.vision_opd_requirements.sha256"
 if [[ "$INSTALL_MODE" == "auto" && -x "$VENV_DIR/bin/python" && -f "$MARKER_FILE" ]]; then
     if [[ "$(<"$MARKER_FILE")" == "$INSTALL_FINGERPRINT" ]]; then
@@ -128,6 +129,11 @@ if [[ ! -x "$VENV_DIR/bin/python" ]]; then
 fi
 
 RUNTIME_PYTHON="$VENV_DIR/bin/python"
+if grep -Eiq '^include-system-site-packages[[:space:]]*=[[:space:]]*true' "$VENV_DIR/pyvenv.cfg"; then
+    echo "Runtime venv exposes base-image packages, which can leak an incompatible torch_npu into this profile: $VENV_DIR" >&2
+    echo "Use the project-generated isolated venv (include-system-site-packages = false)." >&2
+    exit 2
+fi
 if ! _vopd_python_supported "$RUNTIME_PYTHON"; then
     echo "Existing venv uses an unsupported Python: $($RUNTIME_PYTHON --version 2>&1)" >&2
     echo "Delete $VENV_DIR or point VOPD_VENV_DIR to a new directory." >&2
@@ -143,6 +149,8 @@ PIP_ARGS=(
 # Do not inherit a base image's pip extra-index/find-links settings. All package
 # sources for this lifecycle are declared explicitly below.
 export PIP_CONFIG_FILE="${VOPD_PIP_CONFIG_FILE:-/dev/null}"
+export PYTHONNOUSERSITE=1
+unset PYTHONHOME
 unset PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX
 if [[ "${VOPD_PIP_NO_INDEX:-0}" == "1" ]]; then
     PIP_ARGS+=(--no-index)
@@ -173,6 +181,7 @@ if [[ "${VOPD_PIP_NO_INDEX:-0}" == "1" ]]; then
     "$BOOTSTRAP_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
         --project-root "$PROJECT_ROOT" \
         --wheel-dir "$LOCAL_WHEEL_DIR" \
+        --python-version "$VOPD_PYTHON_VERSION" \
         --require-manifests
 fi
 
@@ -196,7 +205,7 @@ echo "[install 0/4] Resolving the complete worker environment without installati
     -r "$CORE_REQUIREMENTS_FILE" \
     -r "$REQUIREMENTS_FILE"
 
-echo "[install 1/4] Installing the official CANN 8.5.1 / PyTorch 2.9 compatibility unit..."
+echo "[install 1/4] Installing the ${VOPD_STACK_PROFILE} / Python ${VOPD_PYTHON_VERSION} compatibility unit..."
 echo "  primary_index:    ${VOPD_PIP_INDEX_URL:-pip default}"
 echo "  extra_index:      ${VOPD_PIP_EXTRA_INDEX_URL:-disabled}"
 echo "  local_wheels:     ${VOPD_LOCAL_WHEEL_DIR:-disabled}"
@@ -269,7 +278,7 @@ if "$RUNTIME_PYTHON" -m pip install \
 else
     if [[ "${VOPD_VLLM_ALLOW_SOURCE_FALLBACK:-0}" != "1" ]]; then
         echo "Prebuilt vLLM/vLLM-Ascend installation failed and source fallback is disabled." >&2
-        echo "Add compatible cp310/aarch64 wheels to VOPD_LOCAL_WHEEL_DIR." >&2
+        echo "Add compatible ${VOPD_PYTHON_TAG}/aarch64 wheels to VOPD_LOCAL_WHEEL_DIR." >&2
         exit 1
     fi
     echo "Prebuilt vLLM wheel is incompatible or unavailable; using the source fallback..."

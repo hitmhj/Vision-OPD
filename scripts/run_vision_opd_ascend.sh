@@ -15,6 +15,13 @@ set -a
 source "$VOPD_CONFIG_FILE"
 set +a
 
+if [[ -z "${PYTHON_BIN:-}" && "${VOPD_RUNTIME_PROFILE_READY:-0}" != "1" ]]; then
+    # Direct invocations still resolve the same ABI-specific environment as
+    # the public lifecycle; normal start-script invocations already exported it.
+    # shellcheck source=resolve_ascend_runtime.sh
+    source "$PROJECT_ROOT/scripts/resolve_ascend_runtime.sh"
+fi
+
 if [[ -z "${PYTHON_BIN:-}" ]]; then
     if [[ "$VOPD_VENV_DIR" == /* ]]; then
         PYTHON_BIN="${VOPD_VENV_DIR}/bin/python"

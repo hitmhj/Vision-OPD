@@ -42,7 +42,7 @@ Options:
 The default is offline. VOPD_INTERNAL_WHEEL_DIRS may contain colon-separated
 directories. Relative paths are resolved from the repository root. On an
 x86_64/Python 3.9 WebStudio host, pip is automatically placed in cross-target
-mode for CPython 3.10/aarch64; the generated venv is still created only later
+mode for the configured CPython 3.10/3.11 aarch64 target; the generated venv is still created only later
 on the real NPU worker.
 EOF
 }
@@ -118,7 +118,21 @@ fi
 
 ASSET_ROOT="$(_vopd_resolve_path "${VOPD_ASSET_ROOT:-envs}")"
 MODEL_DIR="$(_vopd_resolve_path "${VOPD_MODEL_PATH:-envs/models/Qwen3.5-4B}")"
-WHEEL_DIR="$(_vopd_resolve_path "${VOPD_LOCAL_WHEEL_DIR:-envs/wheels/cp310-aarch64}")"
+TARGET_PYTHON="${VOPD_PREPARE_TARGET_PYTHON:-3.11}"
+case "$TARGET_PYTHON" in
+    3.10|3.11) ;;
+    *)
+        echo "VOPD_PREPARE_TARGET_PYTHON must be 3.10 or 3.11; got $TARGET_PYTHON" >&2
+        exit 2
+        ;;
+esac
+TARGET_PYTHON_COMPACT="${TARGET_PYTHON/./}"
+TARGET_PYTHON_TAG="cp${TARGET_PYTHON_COMPACT}"
+if [[ -n "${VOPD_LOCAL_WHEEL_DIR:-}" ]]; then
+    WHEEL_DIR="$(_vopd_resolve_path "$VOPD_LOCAL_WHEEL_DIR")"
+else
+    WHEEL_DIR="$(_vopd_resolve_path "${VOPD_WHEEL_ROOT:-envs/wheels}/${TARGET_PYTHON_TAG}-aarch64")"
+fi
 PREPARE_RUNTIME_DIR="${ASSET_ROOT}/runtime/asset-preparer"
 MODEL_MANIFEST="${MODEL_DIR}/.vision_opd_model_manifest.json"
 
@@ -143,7 +157,7 @@ _vopd_select_python() {
         printf '%s\n' "$VOPD_BOOTSTRAP_PYTHON"
         return 0
     fi
-    for candidate in python3.10 python3 python; do
+    for candidate in python3.11 python3.10 python3 python; do
         candidate_path="$(command -v "$candidate" 2>/dev/null || true)"
         [[ -n "$candidate_path" ]] || continue
         if "$candidate_path" -c 'import sys' >/dev/null 2>&1; then
@@ -197,11 +211,11 @@ declare -a PIP_TARGET_ARGS=(
     --platform manylinux_2_28_aarch64
     --platform manylinux_2_31_aarch64
     --platform linux_aarch64
-    --python-version 3.10
+    --python-version "$TARGET_PYTHON"
     --implementation cp
-    --abi cp310
+    --abi "$TARGET_PYTHON_TAG"
 )
-if [[ "$PREPARE_HOST_PYTHON" == "3.10" && \
+if [[ "$PREPARE_HOST_PYTHON" == "$TARGET_PYTHON" && \
       ("$PREPARE_HOST_ARCH" == "aarch64" || "$PREPARE_HOST_ARCH" == "arm64") ]]; then
     PREPARE_MODE="native"
     PIP_TARGET_ARGS=()
@@ -231,7 +245,7 @@ echo "  model_dir:          $MODEL_DIR"
 echo "  wheel_dir:          $WHEEL_DIR"
 echo "  python:             $PREPARE_PYTHON ($($PREPARE_PYTHON --version 2>&1))"
 echo "  host_arch:          $PREPARE_HOST_ARCH"
-echo "  wheel_target:       CPython 3.10/aarch64"
+echo "  wheel_target:       CPython ${TARGET_PYTHON}/aarch64 (${TARGET_PYTHON_TAG})"
 echo "  resolution_mode:    $PREPARE_MODE"
 echo "  network_enabled:    $ONLINE"
 echo "  check_only:         $CHECK_ONLY"
@@ -336,25 +350,47 @@ _vopd_download_file() {
     local destination="$2"
     [[ -s "$destination" ]] && return 0
     echo "Downloading $(basename "$destination") ..."
-    "$PREPARE_PYTHON" - "$url" "$destination" "${VOPD_PIP_TIMEOUT:-120}" <<'PY'
+    "$PREPARE_PYTHON" - "$url" "$destination" "${VOPD_PIP_TIMEOUT:-120}" "${VOPD_PIP_RETRIES:-5}" <<'PY'
 import os
 import pathlib
 import shutil
 import sys
+import time
 import urllib.request
 
-url, destination, timeout = sys.argv[1], pathlib.Path(sys.argv[2]), float(sys.argv[3])
+url = sys.argv[1]
+destination = pathlib.Path(sys.argv[2])
+timeout = float(sys.argv[3])
+retries = int(sys.argv[4])
 temporary = destination.with_name(destination.name + ".part")
 destination.parent.mkdir(parents=True, exist_ok=True)
-try:
-    with urllib.request.urlopen(url, timeout=timeout) as response, temporary.open("wb") as output:
-        shutil.copyfileobj(response, output)
-    if temporary.stat().st_size == 0:
-        raise RuntimeError(f"empty response from {url}")
-    os.replace(temporary, destination)
-finally:
-    if temporary.exists():
-        temporary.unlink()
+last_error = None
+for attempt in range(retries + 1):
+    try:
+        existing = temporary.stat().st_size if temporary.exists() else 0
+        request = urllib.request.Request(url)
+        if existing:
+            request.add_header("Range", f"bytes={existing}-")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            resumed = existing > 0 and getattr(response, "status", None) == 206
+            mode = "ab" if resumed else "wb"
+            with temporary.open(mode) as output:
+                shutil.copyfileobj(response, output, length=1024 * 1024)
+        if temporary.stat().st_size == 0:
+            raise RuntimeError(f"empty response from {url}")
+        os.replace(temporary, destination)
+        break
+    except Exception as exc:
+        last_error = exc
+        if attempt >= retries:
+            raise RuntimeError(
+                f"download failed after {retries + 1} attempts; partial file kept at {temporary}: {exc}"
+            ) from exc
+        delay = min(2 ** attempt, 15)
+        print(f"Download attempt {attempt + 1} failed: {exc}; retrying in {delay}s", file=sys.stderr)
+        time.sleep(delay)
+else:
+    raise RuntimeError(last_error)
 PY
 }
 
@@ -400,12 +436,14 @@ if [[ "$SKIP_WHEELS" != "1" && "$CHECK_ONLY" != "1" ]]; then
     fi
 
     if [[ "$ONLINE" == "1" ]]; then
+        _vopd_torch_npu_wheel="torch_npu-2.9.0.post1+git4c901a4-${TARGET_PYTHON_TAG}-${TARGET_PYTHON_TAG}-manylinux_2_28_aarch64.whl"
+        _vopd_triton_wheel="triton_ascend-3.2.0.dev20260322-${TARGET_PYTHON_TAG}-${TARGET_PYTHON_TAG}-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl"
         _vopd_download_file \
-            'https://vllm-ascend.obs.cn-north-4.myhuaweicloud.com/vllm-ascend/torch_npu-2.9.0.post1%2Bgit4c901a4-cp310-cp310-manylinux_2_28_aarch64.whl' \
-            "$WHEEL_DIR/torch_npu-2.9.0.post1+git4c901a4-cp310-cp310-manylinux_2_28_aarch64.whl"
+            "https://vllm-ascend.obs.cn-north-4.myhuaweicloud.com/vllm-ascend/${_vopd_torch_npu_wheel/+/%2B}" \
+            "$WHEEL_DIR/${_vopd_torch_npu_wheel}"
         _vopd_download_file \
-            'https://vllm-ascend.obs.cn-north-4.myhuaweicloud.com/vllm-ascend/triton_ascend-3.2.0.dev20260322-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl' \
-            "$WHEEL_DIR/triton_ascend-3.2.0.dev20260322-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl"
+            "https://vllm-ascend.obs.cn-north-4.myhuaweicloud.com/vllm-ascend/${_vopd_triton_wheel}" \
+            "$WHEEL_DIR/${_vopd_triton_wheel}"
     fi
 
     _vopd_download_args=(
@@ -434,12 +472,12 @@ if [[ "$SKIP_WHEELS" != "1" && "$CHECK_ONLY" != "1" ]]; then
         if [[ ${#RESOLVED_INTERNAL_WHEEL_DIRS[@]} -eq 0 && \
               -z "$(find "$WHEEL_DIR" -maxdepth 1 -type f -name '*.whl' -print -quit)" ]]; then
             echo "Offline preparation has no wheel source." >&2
-            echo "Set VOPD_INTERNAL_WHEEL_DIRS or copy cp310/aarch64 wheels into $WHEEL_DIR." >&2
+            echo "Set VOPD_INTERNAL_WHEEL_DIRS or copy ${TARGET_PYTHON_TAG}/aarch64 wheels into $WHEEL_DIR." >&2
             exit 2
         fi
     fi
 
-    echo "Resolving and collecting the complete Python 3.10/aarch64 wheelhouse..."
+    echo "Resolving and collecting the complete Python ${TARGET_PYTHON}/aarch64 wheelhouse..."
     "$PREPARE_PYTHON" -m pip download \
         "${_vopd_download_args[@]}" \
         --constraint "$PROJECT_ROOT/requirements-ascend-core.txt" \
@@ -457,6 +495,7 @@ if [[ "$SKIP_WHEELS" != "1" && "$CHECK_ONLY" != "1" ]]; then
     "$PREPARE_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
         --project-root "$PROJECT_ROOT" \
         --wheel-dir "$WHEEL_DIR" \
+        --python-version "$TARGET_PYTHON" \
         --write-wheel-manifest
 fi
 
@@ -469,7 +508,7 @@ if [[ "$SKIP_MODEL" != "1" ]]; then
     )
 fi
 if [[ "$SKIP_WHEELS" != "1" ]]; then
-    _vopd_check_args+=(--wheel-dir "$WHEEL_DIR")
+    _vopd_check_args+=(--wheel-dir "$WHEEL_DIR" --python-version "$TARGET_PYTHON")
 fi
 _vopd_check_args+=(--require-manifests)
 "$PREPARE_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_assets.py" "${_vopd_check_args[@]}"

@@ -42,14 +42,15 @@ pip install causal-conv1d==1.6.1 --no-build-isolation
 
 The Ascend path is separate from the CUDA requirements above. Portable model
 and wheel assets can be prepared in x86_64/Python 3.9 WebStudio: pip is
-cross-targeted to CPython 3.10/aarch64. Dependency installation still runs only
+cross-targeted to the selected CPython 3.10/3.11 aarch64 worker ABI. Dependency installation still runs only
 on the real NPU worker. Configure CANN/NNAL paths, lifecycle switches and hyperparameters in
 [`vision_opd_ascend.env`](vision_opd_ascend.env). Asset preparation and training
 are deliberately separate:
 
 ```bash
 # Run once in WebStudio or another preparation host. This default is offline:
-# it cross-resolves cp310/aarch64 assets from the supplied wheel/model sources.
+# It defaults to cp311/aarch64 for the current CANN 8.5 worker image. Set
+# VOPD_PREPARE_TARGET_PYTHON=3.10 only for a confirmed Python 3.10 worker.
 VOPD_INTERNAL_WHEEL_DIRS=/path/to/internal/whls \
 VOPD_MODEL_SOURCE_DIR=/path/to/Qwen3.5-4B \
 bash scripts/prepare_ascend_assets.sh
@@ -65,8 +66,9 @@ worker network access: the training entry remains offline and never invokes
 the preparation script.
 
 The entry exports the configuration as real environment variables and performs
-the complete training lifecycle: choose Python 3.10 on the aarch64 NPU worker,
-create or reuse `envs/runtime/.venv-ascend`, install the official CANN
+the complete training lifecycle: fingerprint the worker, choose an available
+Python 3.10/3.11 with a matching wheelhouse, create or reuse a versioned venv,
+install the official CANN
 8.5.1/vLLM-Ascend 0.18 Python
 stack, load CANN/NNAL, prepare data, preflight, train, save checkpoints, and
 optionally merge the latest checkpoint. ModelArts-injected `VOPD_*` values take
@@ -78,8 +80,8 @@ the vLLM hardware-plugin lock. The fixed unit is CANN 8.5.1, torch 2.9.0,
 `triton-ascend==3.2.0.dev20260322`, and vLLM/vLLM-Ascend 0.18.0.
 
 Production installation is fully offline by default and uses
-`--no-index --find-links`. Put the complete Python 3.10/aarch64 wheelhouse in
-the project-relative `envs/wheels/cp310-aarch64` directory, or set
+`--no-index --find-links`. Put the complete ABI-matched wheelhouse in
+`envs/wheels/cp310-aarch64` or `envs/wheels/cp311-aarch64`, or set
 `VOPD_LOCAL_WHEEL_DIR` to its mounted location. Asset preparation writes a
 SHA-256 inventory only after pip resolves the complete dependency closure. The
 launcher verifies that manifest and repeats resolution with `pip --dry-run`
@@ -98,6 +100,12 @@ Every Vision-OPD command derives `PROJECT_ROOT` from its launcher location, so
 the complete repository can be mounted at any path. The vendor environment
 scripts run without Bash nounset and `ZSH_VERSION` is defined before ATB is
 loaded.
+
+The NPU task still has one fixed command. `VOPD_RUN_MODE` controls how far that
+same entry proceeds: `probe`, `dependencies`, `preflight`, `smoke`, or the
+default `train`. For the first task on a new image, use
+`VOPD_RUN_MODE=probe`; it prints Python, exact CANN evidence, glibc, NPU and
+rank information without installing dependencies.
 
 ### 2. Prepare Training Data
 

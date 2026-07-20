@@ -12,6 +12,21 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
 VOPD_CONFIG_FILE="${VOPD_CONFIG_FILE:-${PROJECT_ROOT}/vision_opd_ascend.env}"
 
+# The platform always invokes this one file. A run mode only changes how far
+# the lifecycle proceeds; it never changes the public entry point.
+_vopd_requested_run_mode="${VOPD_RUN_MODE:-train}"
+if [[ "$_vopd_requested_run_mode" == "smoke" ]]; then
+    export VOPD_TRAIN_BATCH_SIZE="${VOPD_TRAIN_BATCH_SIZE:-8}"
+    export VOPD_PPO_MINI_BATCH_SIZE="${VOPD_PPO_MINI_BATCH_SIZE:-8}"
+    export VOPD_ROLLOUT_N="${VOPD_ROLLOUT_N:-2}"
+    export VOPD_MAX_PROMPT_LENGTH="${VOPD_MAX_PROMPT_LENGTH:-4096}"
+    export VOPD_MAX_RESPONSE_LENGTH="${VOPD_MAX_RESPONSE_LENGTH:-512}"
+    export VOPD_ROLLOUT_MEMORY_UTILIZATION="${VOPD_ROLLOUT_MEMORY_UTILIZATION:-0.4}"
+    export VOPD_SAVE_FREQ="${VOPD_SAVE_FREQ:--1}"
+    export VOPD_TOTAL_TRAINING_STEPS="${VOPD_TOTAL_TRAINING_STEPS:-1}"
+    export VOPD_RESUME_MODE="${VOPD_RESUME_MODE:-disable}"
+fi
+
 # Export every value loaded from the config file. Entries in the checked-in
 # config use ${VAR:-default}, so variables injected by the platform win.
 if [[ ! -f "$VOPD_CONFIG_FILE" ]]; then
@@ -22,6 +37,14 @@ set -a
 # shellcheck disable=SC1090
 source "$VOPD_CONFIG_FILE"
 set +a
+
+case "$VOPD_RUN_MODE" in
+    probe|dependencies|preflight|smoke|train) ;;
+    *)
+        echo "VOPD_RUN_MODE must be probe, dependencies, preflight, smoke, or train; got $VOPD_RUN_MODE" >&2
+        exit 2
+        ;;
+esac
 
 # Resolve every user-facing relative path against the repository, not against
 # the algorithm directory from which ModelArts invoked this script.
@@ -106,7 +129,7 @@ _vopd_log() {
 
 trap '_vopd_status=$?; _vopd_log "ERROR: lifecycle failed at line ${BASH_LINENO[0]} (exit=${_vopd_status})"; exit "${_vopd_status}"' ERR
 
-_vopd_log "[0/7] Confirming that this is an Ascend worker, not WebStudio..."
+_vopd_log "[0/8] Confirming that this is an Ascend worker, not WebStudio..."
 if ! command -v npu-smi >/dev/null 2>&1; then
     echo "npu-smi is unavailable. Run this entry inside the ModelArts Ascend NPU task." >&2
     echo "WebStudio may cross-prepare assets, but training requires the real NPU worker." >&2
@@ -116,10 +139,23 @@ if ! npu-smi info >/dev/null 2>&1; then
     echo "npu-smi cannot query the device; check the task's 910B allocation and driver mount." >&2
     exit 2
 fi
+
+_vopd_log "[1/8] Recording the immutable worker fingerprint before installation..."
+bash "$PROJECT_ROOT/scripts/probe_ascend_worker.sh"
+if [[ "$VOPD_RUN_MODE" == "probe" ]]; then
+    _vopd_log "Probe mode completed; no packages were installed and no model/data/training stage ran."
+    exit 0
+fi
+
+# Resolve Python 3.10/3.11, its ABI-specific offline wheelhouse and its
+# versioned venv once; every remaining stage inherits these exact values.
+# shellcheck source=resolve_ascend_runtime.sh
+source "$PROJECT_ROOT/scripts/resolve_ascend_runtime.sh"
+
 for _vopd_vendor_script in "$CANN_ENV_SCRIPT" "$NNAL_ENV_SCRIPT"; do
     if [[ ! -f "$_vopd_vendor_script" ]]; then
         echo "Configured Ascend runtime script does not exist: $_vopd_vendor_script" >&2
-        echo "Select the CANN 8.5.1/compatible NNAL task image or inject the corresponding script path." >&2
+        echo "Select the ${VOPD_STACK_PROFILE} compatible image or inject the corresponding script path." >&2
         exit 2
     fi
 done
@@ -135,31 +171,35 @@ fi
 # invocations exit cleanly, and WebStudio reports the actual host mismatch
 # instead of a misleading missing-model error. The model is still validated
 # before any dependency installation begins.
-if [[ "${VOPD_REQUIRE_LOCAL_MODEL:-1}" == "1" && ! -d "$VOPD_MODEL_PATH" ]]; then
-    echo "Local model directory does not exist: $VOPD_MODEL_PATH" >&2
-    echo "Run the asset preparation phase or inject VOPD_MODEL_PATH=/path/to/model." >&2
-    echo "The production entry does not download model weights from Hugging Face." >&2
-    exit 2
-fi
-if [[ "${VOPD_REQUIRE_LOCAL_MODEL:-1}" == "1" ]]; then
-    _vopd_asset_python="${VOPD_BOOTSTRAP_PYTHON:-}"
-    if [[ -z "$_vopd_asset_python" ]]; then
-        _vopd_asset_python="$(command -v python3.10 || command -v python3 || true)"
-    fi
-    if [[ -z "$_vopd_asset_python" || ! -x "$_vopd_asset_python" ]]; then
-        echo "Python is unavailable for the local model integrity check." >&2
+if [[ "$VOPD_RUN_MODE" != "dependencies" ]]; then
+    if [[ "${VOPD_REQUIRE_LOCAL_MODEL:-1}" == "1" && ! -d "$VOPD_MODEL_PATH" ]]; then
+        echo "Local model directory does not exist: $VOPD_MODEL_PATH" >&2
+        echo "Run the asset preparation phase or inject VOPD_MODEL_PATH=/path/to/model." >&2
+        echo "The production entry does not download model weights from Hugging Face." >&2
         exit 2
     fi
-    "$_vopd_asset_python" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
-        --project-root "$PROJECT_ROOT" \
-        --model-dir "$VOPD_MODEL_PATH" \
-        --expected-model-repo-id "$VOPD_MODEL_REPO_ID" \
-        --expected-model-revision "$VOPD_MODEL_REVISION" \
-        --require-manifests
+    if [[ "${VOPD_REQUIRE_LOCAL_MODEL:-1}" == "1" ]]; then
+        _vopd_asset_python="$VOPD_BOOTSTRAP_PYTHON"
+        if [[ -z "$_vopd_asset_python" || ! -x "$_vopd_asset_python" ]]; then
+            echo "Python is unavailable for the local model integrity check." >&2
+            exit 2
+        fi
+        "$_vopd_asset_python" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
+            --project-root "$PROJECT_ROOT" \
+            --model-dir "$VOPD_MODEL_PATH" \
+            --expected-model-repo-id "$VOPD_MODEL_REPO_ID" \
+            --expected-model-revision "$VOPD_MODEL_REVISION" \
+            --require-manifests
+    fi
 fi
 
-_vopd_log "[1/7] Preparing the isolated NPU-worker Python environment (mode: $VOPD_INSTALL_MODE)..."
+_vopd_log "[2/8] Preparing the isolated NPU-worker Python environment (mode: $VOPD_INSTALL_MODE)..."
 bash "$PROJECT_ROOT/scripts/install_ascend.sh"
+
+if [[ "$VOPD_RUN_MODE" == "dependencies" ]]; then
+    _vopd_log "Dependency mode completed; model loading, data preparation and training were skipped."
+    exit 0
+fi
 
 if [[ "$VOPD_VENV_DIR" == /* ]]; then
     _vopd_venv_dir="$VOPD_VENV_DIR"
@@ -174,15 +214,18 @@ fi
 export PYTHON_BIN
 export PATH="$(dirname "$PYTHON_BIN"):${PATH}"
 
-_vopd_log "[2/7] Loading the Huawei CANN, NNAL/ATB and ASDSIP runtime..."
+_vopd_log "[3/8] Loading the Huawei CANN, NNAL/ATB and ASDSIP runtime..."
 # shellcheck source=ascend_env.sh
 source "$PROJECT_ROOT/scripts/ascend_env.sh"
 
-_vopd_log "[3/7] Recording host and accelerator diagnostics..."
+_vopd_log "[4/8] Recording the resolved training runtime..."
 echo "  project_root:        $PROJECT_ROOT"
 echo "  lifecycle_log:       $VOPD_LIFECYCLE_LOG"
 echo "  python:              $($PYTHON_BIN --version 2>&1)"
 echo "  python_executable:   $PYTHON_BIN"
+echo "  python_target:       $VOPD_PYTHON_VERSION ($VOPD_PYTHON_TAG)"
+echo "  wheelhouse:          $VOPD_LOCAL_WHEEL_DIR"
+echo "  stack_profile:       $VOPD_STACK_PROFILE"
 echo "  worker_arch:         $(uname -m)"
 echo "  CANN_ENV_SCRIPT:     $CANN_ENV_SCRIPT"
 echo "  NNAL_ENV_SCRIPT:     $NNAL_ENV_SCRIPT"
@@ -192,11 +235,11 @@ echo "  MA_NUM_GPUS:         ${MA_NUM_GPUS:-unset}"
 echo "  VC_TASK_INDEX:       ${VC_TASK_INDEX:-unset}"
 echo "  visible_npus:        ${ASCEND_RT_VISIBLE_DEVICES:-unset}"
 npu-smi info
-/usr/bin/gcc --version
-/usr/bin/g++ --version
-free -h
+if command -v gcc >/dev/null 2>&1; then gcc --version | head -n 1; else echo "gcc: unavailable (not required for binary-only install)"; fi
+if command -v g++ >/dev/null 2>&1; then g++ --version | head -n 1; else echo "g++: unavailable (not required for binary-only install)"; fi
+if command -v free >/dev/null 2>&1; then free -h; else echo "memory summary: free command unavailable"; fi
 
-_vopd_log "[4/7] Resolving the training dataset..."
+_vopd_log "[5/8] Resolving the training dataset..."
 if [[ ! -f "$VOPD_TRAIN_FILE" ]]; then
     if [[ "$VOPD_PREPARE_DATA_IF_MISSING" == "1" ]]; then
         _vopd_prepare_args=(--data-dir "$VOPD_DATA_DIR")
@@ -222,7 +265,7 @@ if [[ ! -f "$VOPD_TRAIN_FILE" ]]; then
     exit 1
 fi
 
-_vopd_log "[5/7] Running Ascend and configuration preflight checks..."
+_vopd_log "[6/8] Running Ascend and configuration preflight checks..."
 "$PYTHON_BIN" "$PROJECT_ROOT/scripts/check_ascend_env.py" --min-npus "$VOPD_GPUS_PER_NODE"
 
 echo "Vision-OPD resolved configuration"
@@ -245,12 +288,17 @@ echo "  resume_mode:     $VOPD_RESUME_MODE"
 echo "  prompt/response: $VOPD_MAX_PROMPT_LENGTH/$VOPD_MAX_RESPONSE_LENGTH"
 echo "  save_frequency:  $VOPD_SAVE_FREQ"
 
-_vopd_log "[6/7] Starting Vision-OPD Ray/FSDP training..."
+if [[ "$VOPD_RUN_MODE" == "preflight" ]]; then
+    _vopd_log "Preflight mode completed; training and checkpoint merge were skipped."
+    exit 0
+fi
+
+_vopd_log "[7/8] Starting Vision-OPD Ray/FSDP training (mode: $VOPD_RUN_MODE)..."
 export VOPD_SKIP_PREFLIGHT=1
 export ASCEND_LAUNCH_BLOCKING=1
 bash "$PROJECT_ROOT/scripts/run_vision_opd_ascend.sh" "$@"
 
-_vopd_log "[7/7] Finalizing saved model artifacts..."
+_vopd_log "[8/8] Finalizing saved model artifacts..."
 if [[ "$VOPD_AUTO_MERGE" == "1" ]]; then
     mapfile -t _vopd_checkpoints < <(
         find "$VOPD_OUTPUT_DIR" -mindepth 1 -maxdepth 1 -type d -name 'global_step_*' -print | sort -V

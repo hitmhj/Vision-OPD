@@ -342,6 +342,8 @@ def check_static(project_root: Path) -> bool:
         "requirements-ascend-core.txt",
         "requirements-ascend-plugins.txt",
         "scripts/ascend_env.sh",
+        "scripts/resolve_ascend_runtime.sh",
+        "scripts/probe_ascend_worker.sh",
         "scripts/install_ascend.sh",
         "scripts/check_ascend_assets.py",
         "scripts/prepare_ascend_assets.sh",
@@ -421,6 +423,9 @@ def check_static(project_root: Path) -> bool:
         "MA_NUM_HOSTS",
         "VOPD_TRAIN_FILE",
         "VOPD_CACHE_DIR",
+        "VOPD_RUN_MODE",
+        "probe_ascend_worker.sh",
+        "resolve_ascend_runtime.sh",
         "check_ascend_assets.py",
         "check_ascend_env.py",
         "run_vision_opd_ascend.sh",
@@ -443,6 +448,21 @@ def check_static(project_root: Path) -> bool:
     if "prepare_ascend_assets.sh" in job_entry:
         fail("training entry must not download or prepare portable assets")
         success = False
+    runtime_resolver = (project_root / "scripts/resolve_ascend_runtime.sh").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "VOPD_SUPPORTED_PYTHONS",
+        "VOPD_TARGET_PYTHON",
+        "VOPD_PYTHON_VERSION",
+        "VOPD_PYTHON_TAG",
+        ".venv-ascend-${VOPD_PYTHON_TAG}",
+        "${tag}-aarch64",
+        "PYTHONNOUSERSITE=1",
+    ):
+        if required not in runtime_resolver:
+            fail(f"runtime profile resolver is missing: {required}")
+            success = False
     dependency_installer = (project_root / "scripts/install_ascend.sh").read_text(encoding="utf-8")
     for stage in ("VOPD_VENV_DIR", "VOPD_ASCEND_REQUIREMENTS", "VOPD_BOOTSTRAP_PYTHON"):
         if stage not in dependency_installer:
@@ -466,6 +486,8 @@ def check_static(project_root: Path) -> bool:
         "--no-deps",
         '--editable "$PROJECT_ROOT"',
         "--dependencies-only",
+        "resolve_ascend_runtime.sh",
+        "VOPD_PYTHON_VERSION",
     ):
         if required not in dependency_installer:
             fail(f"dependency installer is missing lifecycle operation: {required}")
@@ -489,9 +511,11 @@ def check_static(project_root: Path) -> bool:
         "--require-manifests",
         "--expected-model-repo-id",
         "--platform manylinux_2_28_aarch64",
-        "--python-version 3.10",
+        "VOPD_PREPARE_TARGET_PYTHON",
+        "TARGET_PYTHON_TAG",
+        "--python-version",
         "--implementation cp",
-        "--abi cp310",
+        "--abi",
         'PREPARE_MODE="cross"',
     ):
         if required not in asset_preparer:
@@ -574,6 +598,14 @@ def check_static(project_root: Path) -> bool:
         "VOPD_ROLLOUT_ENGINE",
         "VOPD_RESUME_MODE",
         "VOPD_INSTALL_MODE",
+        "VOPD_RUN_MODE",
+        "VOPD_STACK_PROFILE",
+        "VOPD_SUPPORTED_PYTHONS",
+        "VOPD_TARGET_PYTHON",
+        "VOPD_PREPARE_TARGET_PYTHON",
+        "VOPD_WHEEL_ROOT",
+        "VOPD_RUNTIME_ROOT",
+        "VOPD_MIN_GLIBC",
         "VOPD_VENV_DIR",
         "VOPD_ASCEND_REQUIREMENTS",
         "VOPD_ASCEND_CORE_REQUIREMENTS",
@@ -608,6 +640,9 @@ def check_static(project_root: Path) -> bool:
     offline_defaults = (
         'VOPD_ASSET_ROOT="${VOPD_ASSET_ROOT:-envs}"',
         'VOPD_PREPARE_ONLINE="${VOPD_PREPARE_ONLINE:-0}"',
+        'VOPD_RUN_MODE="${VOPD_RUN_MODE:-train}"',
+        'VOPD_TARGET_PYTHON="${VOPD_TARGET_PYTHON:-auto}"',
+        'VOPD_PREPARE_TARGET_PYTHON="${VOPD_PREPARE_TARGET_PYTHON:-3.11}"',
         'VOPD_PIP_NO_INDEX="${VOPD_PIP_NO_INDEX:-1}"',
         'VOPD_HF_OFFLINE="${VOPD_HF_OFFLINE:-1}"',
         'VOPD_REQUIRE_LOCAL_MODEL="${VOPD_REQUIRE_LOCAL_MODEL:-1}"',
@@ -674,8 +709,15 @@ def check_runtime(project_root: Path, min_npus: int) -> bool:
     success = check_vllm_ascend_registration() and success
     success = check_metadata_consistency() and success
     success = check_lifecycle_config(min_npus) and success
-    if sys.version_info[:2] != (3, 10):
-        fail(f"Python {platform.python_version()} is unsupported; use the pinned Python 3.10 worker")
+    expected_python = os.environ.get("VOPD_PYTHON_VERSION")
+    actual_python = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if sys.version_info[:2] not in {(3, 10), (3, 11)}:
+        fail(f"Python {platform.python_version()} is unsupported; use Python 3.10 or 3.11")
+        success = False
+    elif expected_python and actual_python != expected_python:
+        fail(
+            f"runtime Python is {actual_python}, but the resolved profile requires {expected_python}"
+        )
         success = False
     else:
         ok(f"Python {platform.python_version()}")

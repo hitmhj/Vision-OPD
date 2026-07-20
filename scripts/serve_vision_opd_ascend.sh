@@ -28,6 +28,11 @@ set -a
 source "$VOPD_CONFIG_FILE"
 set +a
 
+# Inference reuses exactly the same Python/ABI profile prepared by the training
+# lifecycle; it never falls back to packages preinstalled in the base image.
+# shellcheck source=resolve_ascend_runtime.sh
+source "$PROJECT_ROOT/scripts/resolve_ascend_runtime.sh"
+
 if [[ -z "${PYTHON_BIN:-}" ]]; then
     if [[ "$VOPD_VENV_DIR" == /* ]]; then
         PYTHON_BIN="${VOPD_VENV_DIR}/bin/python"
