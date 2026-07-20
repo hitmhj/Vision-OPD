@@ -177,8 +177,14 @@ def wheel_is_cp310_aarch64_compatible(filename: str) -> bool:
     for tag in python_tags:
         if tag == "py3" and "none" in abi_tags:
             return True
-        if tag == "py310" and "none" in abi_tags:
-            return True
+        # pip's CPython 3.10 compatible tag set includes pure-Python wheels
+        # tagged for an earlier Python 3 minor (for example py37-none-any).
+        # These contain no native ABI, while py311+ remains incompatible.
+        py_match = re.fullmatch(r"py(\d)(\d+)", tag)
+        if py_match is not None and "none" in abi_tags:
+            py_version = (int(py_match.group(1)), int(py_match.group(2)))
+            if py_version[0] == 3 and py_version <= (3, 10):
+                return True
         match = re.fullmatch(r"cp(\d)(\d+)", tag)
         if match is None:
             continue
