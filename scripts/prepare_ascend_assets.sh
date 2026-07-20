@@ -40,7 +40,10 @@ Options:
   -h, --help                  Show this message.
 
 The default is offline. VOPD_INTERNAL_WHEEL_DIRS may contain colon-separated
-directories. Relative paths are resolved from the repository root.
+directories. Relative paths are resolved from the repository root. On an
+x86_64/Python 3.9 WebStudio host, pip is automatically placed in cross-target
+mode for CPython 3.10/aarch64; the generated venv is still created only later
+on the real NPU worker.
 EOF
 }
 
@@ -183,14 +186,43 @@ os.replace(temporary_path, manifest_path)
 PY
 }
 
-_vopd_require_cp310_aarch64() {
-    if ! "$PREPARE_PYTHON" -c \
-        'import platform, sys; raise SystemExit(0 if sys.version_info[:2] == (3, 10) and platform.machine().lower() in {"aarch64", "arm64"} else 1)'; then
-        echo "Wheel preparation must run with Python 3.10 on aarch64." >&2
-        echo "WebStudio x86_64/Python 3.9 cannot resolve the Atlas 910B wheelhouse." >&2
-        return 1
+PREPARE_HOST_ARCH="$($PREPARE_PYTHON -c 'import platform; print(platform.machine().lower())')"
+PREPARE_HOST_PYTHON="$($PREPARE_PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+PREPARE_MODE="cross"
+declare -a PIP_TARGET_ARGS=(
+    --platform manylinux_2_17_aarch64
+    --platform manylinux2014_aarch64
+    --platform manylinux_2_24_aarch64
+    --platform manylinux_2_27_aarch64
+    --platform manylinux_2_28_aarch64
+    --platform manylinux_2_31_aarch64
+    --platform linux_aarch64
+    --python-version 3.10
+    --implementation cp
+    --abi cp310
+)
+if [[ "$PREPARE_HOST_PYTHON" == "3.10" && \
+      ("$PREPARE_HOST_ARCH" == "aarch64" || "$PREPARE_HOST_ARCH" == "arm64") ]]; then
+    PREPARE_MODE="native"
+    PIP_TARGET_ARGS=()
+fi
+
+if [[ "$SKIP_WHEELS" != "1" && "$CHECK_ONLY" != "1" ]]; then
+    if ! "$PREPARE_PYTHON" -m pip --version >/dev/null 2>&1; then
+        echo "pip is required to resolve the portable wheelhouse." >&2
+        exit 2
     fi
-}
+    if ! "$PREPARE_PYTHON" -c '
+import importlib.metadata
+import re
+version = importlib.metadata.version("pip")
+parts = tuple(int(part) for part in re.match(r"\d+(?:\.\d+)*", version).group().split("."))
+raise SystemExit(0 if parts >= (23, 3) else 1)
+'; then
+        echo "Asset preparation requires pip>=23.3; found $($PREPARE_PYTHON -m pip --version)." >&2
+        exit 2
+    fi
+fi
 
 echo "Vision-OPD portable asset preparation"
 echo "  project_root:       $PROJECT_ROOT"
@@ -198,13 +230,11 @@ echo "  asset_root:         $ASSET_ROOT"
 echo "  model_dir:          $MODEL_DIR"
 echo "  wheel_dir:          $WHEEL_DIR"
 echo "  python:             $PREPARE_PYTHON ($($PREPARE_PYTHON --version 2>&1))"
+echo "  host_arch:          $PREPARE_HOST_ARCH"
+echo "  wheel_target:       CPython 3.10/aarch64"
+echo "  resolution_mode:    $PREPARE_MODE"
 echo "  network_enabled:    $ONLINE"
 echo "  check_only:         $CHECK_ONLY"
-
-# Fail before a potentially large model download when this is the wrong host.
-if [[ "$SKIP_WHEELS" != "1" && "$CHECK_ONLY" != "1" ]]; then
-    _vopd_require_cp310_aarch64
-fi
 
 if [[ "$SKIP_MODEL" != "1" && "$CHECK_ONLY" != "1" ]]; then
     if [[ -n "$MODEL_SOURCE_DIR" ]]; then
@@ -358,6 +388,7 @@ if [[ "$SKIP_WHEELS" != "1" && "$CHECK_ONLY" != "1" ]]; then
         --only-binary=:all:
         --find-links "$WHEEL_DIR"
     )
+    _vopd_download_args+=("${PIP_TARGET_ARGS[@]}")
     for _vopd_internal_dir in "${RESOLVED_INTERNAL_WHEEL_DIRS[@]}"; do
         _vopd_download_args+=(--find-links "$_vopd_internal_dir")
     done
@@ -371,6 +402,12 @@ if [[ "$SKIP_WHEELS" != "1" && "$CHECK_ONLY" != "1" ]]; then
         fi
     else
         _vopd_download_args+=(--no-index)
+        if [[ ${#RESOLVED_INTERNAL_WHEEL_DIRS[@]} -eq 0 && \
+              -z "$(find "$WHEEL_DIR" -maxdepth 1 -type f -name '*.whl' -print -quit)" ]]; then
+            echo "Offline preparation has no wheel source." >&2
+            echo "Set VOPD_INTERNAL_WHEEL_DIRS or copy cp310/aarch64 wheels into $WHEEL_DIR." >&2
+            exit 2
+        fi
     fi
 
     echo "Resolving and collecting the complete Python 3.10/aarch64 wheelhouse..."

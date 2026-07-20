@@ -159,6 +159,37 @@ def version_tuple(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in value.split("."))
 
 
+def wheel_is_cp310_aarch64_compatible(filename: str) -> bool:
+    """Check wheel tags without importing packaging on the preparation host."""
+    if not filename.lower().endswith(".whl"):
+        return False
+    try:
+        _, python_tag, abi_tag, platform_tag = filename[:-4].rsplit("-", 3)
+    except ValueError:
+        return False
+
+    platforms = platform_tag.lower().split(".")
+    if "any" not in platforms and not any(tag.endswith("aarch64") for tag in platforms):
+        return False
+
+    python_tags = python_tag.lower().split(".")
+    abi_tags = abi_tag.lower().split(".")
+    for tag in python_tags:
+        if tag == "py3" and "none" in abi_tags:
+            return True
+        if tag == "py310" and "none" in abi_tags:
+            return True
+        match = re.fullmatch(r"cp(\d)(\d+)", tag)
+        if match is None:
+            continue
+        version = (int(match.group(1)), int(match.group(2)))
+        if version == (3, 10) and any(abi in {"cp310", "abi3", "none"} for abi in abi_tags):
+            return True
+        if version <= (3, 10) and "abi3" in abi_tags:
+            return True
+    return False
+
+
 def write_wheelhouse_manifest(project_root: Path, wheel_dir: Path) -> Path:
     wheel_paths = sorted(path for path in wheel_dir.iterdir() if path.suffix.lower() == ".whl")
     manifest = {
@@ -265,6 +296,16 @@ def check_wheelhouse(
         fail(
             "invalid or truncated wheel archives are present: "
             + ", ".join(invalid_archives[:10])
+        )
+        success = False
+
+    incompatible_wheels = [
+        path.name for path in wheel_paths if not wheel_is_cp310_aarch64_compatible(path.name)
+    ]
+    if incompatible_wheels:
+        fail(
+            "wheelhouse contains wheels incompatible with CPython 3.10/aarch64: "
+            + ", ".join(incompatible_wheels[:20])
         )
         success = False
 

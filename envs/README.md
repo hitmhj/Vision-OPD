@@ -1,8 +1,8 @@
 # Portable Ascend assets
 
-Run `bash scripts/prepare_ascend_assets.sh` on the Python 3.10/aarch64
-ModelArts worker before starting training. The preparation entry creates this
-layout:
+Run `bash scripts/prepare_ascend_assets.sh` in WebStudio or another preparation
+host before starting training. On x86_64/Python 3.9 it instructs pip to resolve
+CPython 3.10/aarch64 wheels explicitly. The preparation entry creates this layout:
 
 ```text
 envs/

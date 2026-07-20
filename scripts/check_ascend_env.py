@@ -479,10 +479,18 @@ def check_static(project_root: Path) -> bool:
         "--write-wheel-manifest",
         "--require-manifests",
         "--expected-model-repo-id",
+        "--platform manylinux_2_28_aarch64",
+        "--python-version 3.10",
+        "--implementation cp",
+        "--abi cp310",
+        'PREPARE_MODE="cross"',
     ):
         if required not in asset_preparer:
             fail(f"portable asset preparer is missing: {required}")
             success = False
+    if "Wheel preparation must run with Python 3.10 on aarch64" in asset_preparer:
+        fail("portable asset preparation still blocks the x86_64/Python 3.9 WebStudio host")
+        success = False
 
     runtime_loader = (project_root / "scripts/ascend_env.sh").read_text(encoding="utf-8")
     vendor_sources = [

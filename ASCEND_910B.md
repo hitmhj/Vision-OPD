@@ -6,8 +6,9 @@ environment must not be mixed.
 
 ## Platform-provided software environment
 
-WebStudio is only an editing environment. The production entry selects Python
-and installs dependencies on the actual NPU worker. This target is deliberately
+WebStudio can edit the repository and cross-prepare portable assets, but it
+never creates the runtime venv or runs training. The production entry selects
+Python and installs dependencies on the actual NPU worker. This target is deliberately
 fixed to the observed Python 3.10/aarch64 Atlas A2 worker and creates an isolated environment at
 `VOPD_VENV_DIR` (default: `envs/runtime/.venv-ascend`).
 `VOPD_INSTALL_MODE=auto` reuses the
@@ -43,8 +44,10 @@ Run the asset preparation entry before the training entry. It derives every
 default from the repository root and creates `envs/models/Qwen3.5-4B`,
 `envs/wheels/cp310-aarch64`, `envs/cache` and `envs/runtime`.
 
-The production-safe default uses no network. It can gather compatible wheels
-from one or more platform directories and copy a complete model snapshot:
+The production-safe default uses no network. The preparation entry supports
+x86_64/Python 3.9 WebStudio by passing an explicit CPython 3.10/aarch64 target
+to pip. It can gather compatible wheels from one or more platform directories
+and copy a complete model snapshot:
 
 ```bash
 VOPD_INTERNAL_WHEEL_DIRS=/opt/platform/whls:/mounted/extra/whls \
@@ -52,9 +55,9 @@ VOPD_MODEL_SOURCE_DIR=/mounted/models/Qwen3.5-4B \
 bash scripts/prepare_ascend_assets.sh
 ```
 
-Compiled `cp311` wheels are ignored by pip on the Python 3.10 worker; only
-compatible `cp310/aarch64` and universal wheels are collected. If the actual
-Python 3.10/aarch64 preparation worker has approved network access, use:
+Compiled `cp311` and x86_64 wheels are rejected; only compatible
+`cp310/aarch64`, older `abi3/aarch64`, and universal wheels are collected. If
+the WebStudio or another preparation host has approved network access, use:
 
 ```bash
 bash scripts/prepare_ascend_assets.sh --online
@@ -64,7 +67,8 @@ bash scripts/prepare_ascend_assets.sh --online
 `envs/runtime/asset-preparer`, download the complete Qwen snapshot, fetch the
 two vLLM-Ascend special wheels from the official Huawei OBS location, and ask
 pip to collect every direct and transitive wheel. Without `--online`, none of
-those hosts is contacted. A successful preparation writes a lock fingerprint
+those hosts is contacted. The NPU training entry never uses `--online`. A
+successful preparation writes a lock fingerprint
 and SHA-256 inventory into the wheelhouse and records the immutable Qwen model
 revision. `--check-only` validates both manifests without contacting a host.
 

@@ -109,7 +109,7 @@ trap '_vopd_status=$?; _vopd_log "ERROR: lifecycle failed at line ${BASH_LINENO[
 _vopd_log "[0/7] Confirming that this is an Ascend worker, not WebStudio..."
 if ! command -v npu-smi >/dev/null 2>&1; then
     echo "npu-smi is unavailable. Run this entry inside the ModelArts Ascend NPU task." >&2
-    echo "WebStudio is only for editing and static checks." >&2
+    echo "WebStudio may cross-prepare assets, but training requires the real NPU worker." >&2
     exit 2
 fi
 if ! npu-smi info >/dev/null 2>&1; then

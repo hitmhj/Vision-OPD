@@ -40,16 +40,16 @@ pip install causal-conv1d==1.6.1 --no-build-isolation
 
 #### Ascend 910B / Atlas A2
 
-The Ascend path is separate from the CUDA requirements above. Dependency
-installation runs on the real NPU worker, so the WebStudio CPU architecture and
-Python version do not affect wheel selection. Configure CANN/NNAL paths,
-lifecycle switches and hyperparameters in
+The Ascend path is separate from the CUDA requirements above. Portable model
+and wheel assets can be prepared in x86_64/Python 3.9 WebStudio: pip is
+cross-targeted to CPython 3.10/aarch64. Dependency installation still runs only
+on the real NPU worker. Configure CANN/NNAL paths, lifecycle switches and hyperparameters in
 [`vision_opd_ascend.env`](vision_opd_ascend.env). Asset preparation and training
 are deliberately separate:
 
 ```bash
-# Run once on the Python 3.10/aarch64 platform worker. This default is offline:
-# it reuses the platform wheel directory and/or an already downloaded model.
+# Run once in WebStudio or another preparation host. This default is offline:
+# it cross-resolves cp310/aarch64 assets from the supplied wheel/model sources.
 VOPD_INTERNAL_WHEEL_DIRS=/path/to/internal/whls \
 VOPD_MODEL_SOURCE_DIR=/path/to/Qwen3.5-4B \
 bash scripts/prepare_ascend_assets.sh
@@ -58,10 +58,11 @@ bash scripts/prepare_ascend_assets.sh
 bash scripts/start_vision_opd_ascend.sh
 ```
 
-If the preparation worker is explicitly allowed to reach Hugging Face, Huawei
+If the WebStudio/preparation host is explicitly allowed to reach Hugging Face, Huawei
 OBS and the configured Python index, replace the first command with
-`bash scripts/prepare_ascend_assets.sh --online`. The training entry remains
-offline and never invokes the preparation script.
+`bash scripts/prepare_ascend_assets.sh --online`. This never gives the NPU
+worker network access: the training entry remains offline and never invokes
+the preparation script.
 
 The entry exports the configuration as real environment variables and performs
 the complete training lifecycle: choose Python 3.10 on the aarch64 NPU worker,
