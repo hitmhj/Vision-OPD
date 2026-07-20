@@ -14,15 +14,6 @@ if [[ "${VOPD_RUNTIME_PROFILE_READY:-0}" == "1" ]]; then
     return 0
 fi
 
-case "${VOPD_STACK_PROFILE:-vllm-ascend-0.18-cann8.5.1}" in
-    vllm-ascend-0.18-cann8.5.1) ;;
-    *)
-        echo "Unsupported VOPD_STACK_PROFILE: ${VOPD_STACK_PROFILE}" >&2
-        echo "Supported profile: vllm-ascend-0.18-cann8.5.1" >&2
-        return 2
-        ;;
-esac
-
 _vopd_profile_resolve_path() {
     local value="$1"
     if [[ "$value" == /* ]]; then
@@ -35,15 +26,6 @@ _vopd_profile_resolve_path() {
 _vopd_profile_python_version() {
     "$1" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' \
         2>/dev/null
-}
-
-_vopd_profile_supported() {
-    local actual="$1"
-    local supported
-    for supported in ${VOPD_SUPPORTED_PYTHONS:-3.11 3.10}; do
-        [[ "$actual" == "$supported" ]] && return 0
-    done
-    return 1
 }
 
 _vopd_profile_tag() {
@@ -97,25 +79,12 @@ _vopd_profile_select_python() {
             return 1
         fi
         version="$(_vopd_profile_python_version "$explicit")"
-        if ! _vopd_profile_supported "$version"; then
-            echo "VOPD_BOOTSTRAP_PYTHON is Python ${version:-unknown}; supported: ${VOPD_SUPPORTED_PYTHONS:-3.11 3.10}" >&2
-            return 1
-        fi
-        if [[ "$requested" != "auto" && "$version" != "$requested" ]]; then
-            echo "VOPD_BOOTSTRAP_PYTHON is Python $version, but VOPD_TARGET_PYTHON=$requested." >&2
-            return 1
-        fi
         printf '%s\n' "$explicit"
         return 0
     fi
 
-    if [[ "$requested" != "auto" ]] && ! _vopd_profile_supported "$requested"; then
-        echo "VOPD_TARGET_PYTHON must be auto or one of: ${VOPD_SUPPORTED_PYTHONS:-3.11 3.10}; got $requested" >&2
-        return 1
-    fi
-
     if [[ "$requested" == "auto" ]]; then
-        for version in ${VOPD_SUPPORTED_PYTHONS:-3.11 3.10}; do
+        for version in ${VOPD_PYTHON_PREFERENCE:-3.11 3.10}; do
             candidates+=("python${version}")
         done
         candidates+=(python3 python)
@@ -123,16 +92,17 @@ _vopd_profile_select_python() {
         candidates+=("python${requested}" python3 python)
     fi
 
-    # Reuse an already validated runtime first, then prefer an interpreter whose
-    # offline wheelhouse was completely resolved. The last phase still selects
-    # a supported interpreter so a missing-assets error names the exact target.
-    for phase in with_runtime with_manifest any_supported; do
+    # Prefer an existing runtime or prepared wheelhouse, then use the first
+    # working Python and let pip/the real training imports decide compatibility.
+    for phase in with_runtime with_manifest any_python; do
         for candidate in "${candidates[@]}"; do
             path="$(_vopd_profile_candidate_path "$candidate")"
             [[ -n "$path" && -x "$path" ]] || continue
             version="$(_vopd_profile_python_version "$path")"
-            _vopd_profile_supported "$version" || continue
-            [[ "$requested" == "auto" || "$version" == "$requested" ]] || continue
+            [[ -n "$version" ]] || continue
+            if [[ "$phase" != "any_python" && "$requested" != "auto" && "$version" != "$requested" ]]; then
+                continue
+            fi
             case "$phase" in
                 with_runtime) _vopd_profile_has_runtime "$version" || continue ;;
                 with_manifest) _vopd_profile_has_manifest "$version" || continue ;;
@@ -142,24 +112,23 @@ _vopd_profile_select_python() {
         done
     done
 
-    if [[ "$requested" == "auto" ]]; then
-        echo "No supported Python 3.10/3.11 was found on the NPU worker." >&2
-    else
-        echo "No Python $requested interpreter was found; VOPD_TARGET_PYTHON explicitly requires that ABI." >&2
-    fi
+    echo "No working Python interpreter was found on the worker." >&2
     echo "Detected candidates:" >&2
     for candidate in python3.11 python3.10 python3 python; do
         path="$(_vopd_profile_candidate_path "$candidate")"
         [[ -n "$path" ]] || continue
         echo "  $candidate -> $path ($($path --version 2>&1 || true))" >&2
     done
-    echo "Use VOPD_TARGET_PYTHON=auto to select an available Python 3.10/3.11 interpreter." >&2
-    echo "Alternatively inject an ABI-matched VOPD_BOOTSTRAP_PYTHON and wheelhouse." >&2
+    echo "Inject VOPD_BOOTSTRAP_PYTHON with the worker's Python executable." >&2
     return 1
 }
 
 VOPD_BOOTSTRAP_PYTHON="$(_vopd_profile_select_python)" || return $?
 VOPD_PYTHON_VERSION="$(_vopd_profile_python_version "$VOPD_BOOTSTRAP_PYTHON")"
+if [[ "${VOPD_TARGET_PYTHON:-auto}" != "auto" && \
+      "$VOPD_PYTHON_VERSION" != "$VOPD_TARGET_PYTHON" ]]; then
+    echo "WARNING: requested Python $VOPD_TARGET_PYTHON is unavailable; using Python $VOPD_PYTHON_VERSION." >&2
+fi
 VOPD_PYTHON_TAG="$(_vopd_profile_tag "$VOPD_PYTHON_VERSION")"
 
 if [[ -n "${VOPD_LOCAL_WHEEL_DIR:-}" ]]; then

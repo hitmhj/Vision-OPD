@@ -13,10 +13,9 @@ envs/
   runtime/.venv-ascend-cp311/ generated on the detected Python 3.11 NPU worker
 ```
 
-The preparation command records the pinned Qwen revision beside the model and
-a requirements fingerprint plus wheel SHA-256 inventory beside the wheelhouse.
-The training entry requires both manifests, so copying assets manually is not a
-replacement for running the preparation phase.
+The preparation command may record the pinned Qwen revision beside the model.
+The training entry does not require model or wheel manifests and passes the
+selected local assets directly to pip and the model loader.
 
 Model weights, wheel archives, caches and virtual environments are ignored by
 Git. They must be included when the complete repository folder is uploaded as

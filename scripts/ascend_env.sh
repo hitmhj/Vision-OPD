@@ -23,27 +23,16 @@ set +u
 # protects us if a nested vendor script enables nounset internally.
 export ZSH_VERSION="${ZSH_VERSION-}"
 
-if [[ -z "${CANN_ENV_SCRIPT:-}" || ! -f "$CANN_ENV_SCRIPT" ]]; then
-    echo "Configured CANN environment script does not exist: ${CANN_ENV_SCRIPT:-unset}" >&2
-    return 1
-fi
-if [[ -z "${NNAL_ENV_SCRIPT:-}" || ! -f "$NNAL_ENV_SCRIPT" ]]; then
-    echo "Configured NNAL/ATB environment script does not exist: ${NNAL_ENV_SCRIPT:-unset}" >&2
-    return 1
-fi
-if [[ "${VOPD_REQUIRE_ASDSIP:-0}" == "1" ]]; then
-    if [[ -z "${ASDSIP_ENV_SCRIPT:-}" || ! -f "$ASDSIP_ENV_SCRIPT" ]]; then
-        echo "Required ASDSIP environment script does not exist: ${ASDSIP_ENV_SCRIPT:-unset}" >&2
-        return 1
-    fi
-fi
-
 # These are the three active source commands from prompt.txt. There is
 # intentionally no /usr/local fallback: silently switching stacks can mix CANN
 # and NNAL versions and was the path that triggered the ZSH_VERSION failure.
-# shellcheck disable=SC1090
-source "$CANN_ENV_SCRIPT"
-set +u
+if [[ -n "${CANN_ENV_SCRIPT:-}" && -f "$CANN_ENV_SCRIPT" ]]; then
+    # shellcheck disable=SC1090
+    source "$CANN_ENV_SCRIPT"
+    set +u
+else
+    echo "WARNING: CANN environment script is unavailable; continuing with the image's current environment." >&2
+fi
 
 _vopd_detect_cann_version() {
     local candidate detected
@@ -72,33 +61,18 @@ _vopd_detect_cann_version() {
 
 VOPD_DETECTED_CANN_VERSION="$(_vopd_detect_cann_version)"
 export VOPD_DETECTED_CANN_VERSION
-if [[ -n "${VOPD_EXPECTED_CANN_VERSION:-}" ]]; then
-    if [[ -z "$VOPD_DETECTED_CANN_VERSION" ]]; then
-        if [[ "${VOPD_REQUIRE_CANN_VERSION_MATCH:-0}" == "1" ]]; then
-            echo "Cannot determine CANN version after sourcing: $CANN_ENV_SCRIPT" >&2
-            echo "Vision-OPD requires CANN ${VOPD_EXPECTED_CANN_VERSION}." >&2
-            return 1
-        else
-            echo "WARNING: CANN version could not be determined; expected baseline is ${VOPD_EXPECTED_CANN_VERSION}." >&2
-            echo "WARNING: continuing to torch_npu, vLLM-Ascend and NPU capability checks." >&2
-        fi
-    elif [[ "$VOPD_DETECTED_CANN_VERSION" != "$VOPD_EXPECTED_CANN_VERSION" ]]; then
-        if [[ "${VOPD_REQUIRE_CANN_VERSION_MATCH:-0}" == "1" ]]; then
-            echo "CANN version mismatch: detected $VOPD_DETECTED_CANN_VERSION, expected $VOPD_EXPECTED_CANN_VERSION." >&2
-            echo "Strict CANN version policy is enabled; refusing an unverified runtime combination." >&2
-            return 1
-        else
-            echo "WARNING: CANN version mismatch: detected $VOPD_DETECTED_CANN_VERSION, tested baseline $VOPD_EXPECTED_CANN_VERSION." >&2
-            echo "WARNING: version mismatch is not fatal; actual NPU capability checks decide whether training continues." >&2
-        fi
-    else
-        echo "CANN version verified: $VOPD_DETECTED_CANN_VERSION"
-    fi
+if [[ -n "${VOPD_EXPECTED_CANN_VERSION:-}" && -n "$VOPD_DETECTED_CANN_VERSION" && \
+      "$VOPD_DETECTED_CANN_VERSION" != "$VOPD_EXPECTED_CANN_VERSION" ]]; then
+    echo "WARNING: CANN $VOPD_DETECTED_CANN_VERSION differs from the tested baseline $VOPD_EXPECTED_CANN_VERSION; continuing." >&2
 fi
 
-# shellcheck disable=SC1090
-source "$NNAL_ENV_SCRIPT" --cxx_abi=0
-set +u
+if [[ -n "${NNAL_ENV_SCRIPT:-}" && -f "$NNAL_ENV_SCRIPT" ]]; then
+    # shellcheck disable=SC1090
+    source "$NNAL_ENV_SCRIPT" --cxx_abi=0
+    set +u
+else
+    echo "WARNING: NNAL/ATB environment script is unavailable; continuing with the image's current environment." >&2
+fi
 if [[ -n "${ASDSIP_ENV_SCRIPT:-}" && -f "$ASDSIP_ENV_SCRIPT" ]]; then
     # shellcheck disable=SC1090
     source "$ASDSIP_ENV_SCRIPT"

@@ -2,7 +2,7 @@
 
 # The single public entry for the complete Vision-OPD Ascend lifecycle:
 # configuration -> Huawei prebuilt environment -> optional data preparation ->
-# preflight -> training/checkpointing -> optional HuggingFace model merge.
+# direct training/checkpointing -> optional HuggingFace model merge.
 # Match prompt.txt while loading the Huawei environment. In particular, do not
 # enable nounset: NNAL/ATB reads ZSH_VERSION directly in a Bash process.
 set +u
@@ -131,13 +131,9 @@ trap '_vopd_status=$?; _vopd_log "ERROR: lifecycle failed at line ${BASH_LINENO[
 
 _vopd_log "[0/8] Confirming that this is an Ascend worker, not WebStudio..."
 if ! command -v npu-smi >/dev/null 2>&1; then
-    echo "npu-smi is unavailable. Run this entry inside the ModelArts Ascend NPU task." >&2
-    echo "WebStudio may cross-prepare assets, but training requires the real NPU worker." >&2
-    exit 2
-fi
-if ! npu-smi info >/dev/null 2>&1; then
-    echo "npu-smi cannot query the device; check the task's 910B allocation and driver mount." >&2
-    exit 2
+    echo "WARNING: npu-smi is unavailable; continuing and leaving device detection to torch_npu/training." >&2
+elif ! npu-smi info >/dev/null 2>&1; then
+    echo "WARNING: npu-smi cannot query the device; continuing and leaving the final decision to training." >&2
 fi
 
 _vopd_log "[1/8] Recording the immutable worker fingerprint before installation..."
@@ -152,45 +148,8 @@ fi
 # shellcheck source=resolve_ascend_runtime.sh
 source "$PROJECT_ROOT/scripts/resolve_ascend_runtime.sh"
 
-for _vopd_vendor_script in "$CANN_ENV_SCRIPT" "$NNAL_ENV_SCRIPT"; do
-    if [[ ! -f "$_vopd_vendor_script" ]]; then
-        echo "Configured Ascend runtime script does not exist: $_vopd_vendor_script" >&2
-        echo "Select the ${VOPD_STACK_PROFILE} compatible image or inject the corresponding script path." >&2
-        exit 2
-    fi
-done
 if [[ ! -f "$ASDSIP_ENV_SCRIPT" ]]; then
-    if [[ "${VOPD_REQUIRE_ASDSIP:-0}" == "1" ]]; then
-        echo "Required ASDSIP environment script does not exist: $ASDSIP_ENV_SCRIPT" >&2
-        exit 2
-    fi
     _vopd_log "ASDSIP is unavailable and optional; continuing with CANN/ATB."
-fi
-
-# The rank and worker checks above are intentionally first: secondary platform
-# invocations exit cleanly, and WebStudio reports the actual host mismatch
-# instead of a misleading missing-model error. The model is still validated
-# before any dependency installation begins.
-if [[ "$VOPD_RUN_MODE" != "dependencies" ]]; then
-    if [[ "${VOPD_REQUIRE_LOCAL_MODEL:-1}" == "1" && ! -d "$VOPD_MODEL_PATH" ]]; then
-        echo "Local model directory does not exist: $VOPD_MODEL_PATH" >&2
-        echo "Run the asset preparation phase or inject VOPD_MODEL_PATH=/path/to/model." >&2
-        echo "The production entry does not download model weights from Hugging Face." >&2
-        exit 2
-    fi
-    if [[ "${VOPD_REQUIRE_LOCAL_MODEL:-1}" == "1" ]]; then
-        _vopd_asset_python="$VOPD_BOOTSTRAP_PYTHON"
-        if [[ -z "$_vopd_asset_python" || ! -x "$_vopd_asset_python" ]]; then
-            echo "Python is unavailable for the local model integrity check." >&2
-            exit 2
-        fi
-        "$_vopd_asset_python" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
-            --project-root "$PROJECT_ROOT" \
-            --model-dir "$VOPD_MODEL_PATH" \
-            --expected-model-repo-id "$VOPD_MODEL_REPO_ID" \
-            --expected-model-revision "$VOPD_MODEL_REVISION" \
-            --require-manifests
-    fi
 fi
 
 _vopd_log "[2/8] Preparing the isolated NPU-worker Python environment (mode: $VOPD_INSTALL_MODE)..."
@@ -234,7 +193,7 @@ echo "  MA_NUM_HOSTS:        ${MA_NUM_HOSTS:-unset}"
 echo "  MA_NUM_GPUS:         ${MA_NUM_GPUS:-unset}"
 echo "  VC_TASK_INDEX:       ${VC_TASK_INDEX:-unset}"
 echo "  visible_npus:        ${ASCEND_RT_VISIBLE_DEVICES:-unset}"
-npu-smi info
+if command -v npu-smi >/dev/null 2>&1; then npu-smi info || true; fi
 if command -v gcc >/dev/null 2>&1; then gcc --version | head -n 1; else echo "gcc: unavailable (not required for binary-only install)"; fi
 if command -v g++ >/dev/null 2>&1; then g++ --version | head -n 1; else echo "g++: unavailable (not required for binary-only install)"; fi
 if command -v free >/dev/null 2>&1; then free -h; else echo "memory summary: free command unavailable"; fi
@@ -265,8 +224,7 @@ if [[ ! -f "$VOPD_TRAIN_FILE" ]]; then
     exit 1
 fi
 
-_vopd_log "[6/8] Running Ascend and configuration preflight checks..."
-"$PYTHON_BIN" "$PROJECT_ROOT/scripts/check_ascend_env.py" --min-npus "$VOPD_GPUS_PER_NODE"
+_vopd_log "[6/8] Compatibility prechecks are disabled; pip imports and training will report real failures."
 
 echo "Vision-OPD resolved configuration"
 echo "  config_file:     $VOPD_CONFIG_FILE"

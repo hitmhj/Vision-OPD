@@ -353,7 +353,7 @@ def check_wheelhouse(
     if missing:
         fail(
             "offline wheelhouse lacks direct pinned distributions (transitive dependencies are "
-            "checked later by pip --dry-run): " + ", ".join(missing)
+            "resolved later by the real pip installation): " + ", ".join(missing)
         )
         success = False
 

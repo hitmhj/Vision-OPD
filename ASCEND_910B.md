@@ -30,16 +30,14 @@ and the special wheel filenames come from the
 [v0.18.0 release notes](https://github.com/vllm-project/vllm-ascend/releases/tag/v0.18.0).
 
 `CANN_ENV_SCRIPT`, `NNAL_ENV_SCRIPT`, and, when available,
-`ASDSIP_ENV_SCRIPT` are sourced in that order. CANN and ATB are required;
-ASDSIP is optional unless `VOPD_REQUIRE_ASDSIP=1`. Bash nounset is disabled and
+`ASDSIP_ENV_SCRIPT` are sourced in that order. Missing scripts produce warnings
+and the current image environment is retained. Bash nounset is disabled and
 `ZSH_VERSION` is explicitly defined before ATB, covering both forms of the
 vendor-script failure.
 
-CANN 8.5.1 remains the tested baseline, but version detection is advisory by
-default (`VOPD_REQUIRE_CANN_VERSION_MATCH=0`). An unknown or different CANN
-version emits a warning and proceeds to real torch-npu, NPU BF16 backward,
-vLLM-Ascend and Ray checks. Strict equality can be restored with
-`VOPD_REQUIRE_CANN_VERSION_MATCH=1`.
+CANN 8.5.1 remains the tested baseline, but version detection is advisory only.
+An unknown or different CANN version never stops the lifecycle; package loading
+and training determine whether the image is usable.
 
 Driver, firmware, CANN and NNAL are system components. They must be installed
 by the machine administrator or supplied by the base container before running
@@ -108,11 +106,10 @@ The same entry performs, in order:
 3. call `scripts/install_ascend.sh` by project-relative path; that installer
    creates/reuses the isolated venv, installs the
    CANN-8.5.1 core, generic runtime, vLLM plugin wheels and editable Vision-OPD
-   package in that order, then validates versions, imports and dependency
-   metadata;
+   package in that order;
 4. source the configured CANN, NNAL/ATB and ASDSIP scripts exactly once;
 5. reuse or prepare data according to `VOPD_PREPARE_DATA_IF_MISSING`;
-6. run NPU and configuration preflight checks;
+6. print the resolved configuration without compatibility gating;
 7. train and save FSDP checkpoints;
 8. optionally merge the latest checkpoint according to `VOPD_AUTO_MERGE`.
 
@@ -126,9 +123,9 @@ be used as that directory.
 
 The installer uses `--no-index --find-links`, ignores inherited pip
 configuration, and clears inherited `PIP_EXTRA_INDEX_URL`/`PIP_FIND_LINKS`.
-It validates the resolved wheelhouse manifest and performs `pip --dry-run` resolution before
-installing the NPU stack. Neither PyTorch, Huawei, Hugging Face nor GitHub is
-contacted by the production default. The wheelhouse must include the exact
+It passes the selected wheelhouse directly to the real pip installation without
+a separate manifest or dry-run gate. Neither PyTorch, Huawei, Hugging Face nor
+GitHub is contacted by the production default. The wheelhouse must include the exact
 ABI-matched cp310/cp311 aarch64 `torch_npu-2.9.0.post1+git4c901a4` and
 `triton_ascend-3.2.0.dev20260322` wheels plus every direct and transitive package
 needed by the three Ascend lock files.
@@ -203,7 +200,7 @@ node exposing eight 910B NPUs; `MA_NUM_GPUS` may override the card count. A
 multi-node job is rejected before installation or training because it needs a
 separate Ray head/worker bootstrap.
 
-### Fixed-entry staged validation
+### Fixed-entry run modes
 
 The platform command never changes:
 
@@ -216,13 +213,13 @@ Set one job environment variable to choose the gate:
 | `VOPD_RUN_MODE` | Last completed stage |
 | --- | --- |
 | `probe` | worker/Python/CANN/glibc/NPU fingerprint; no installation |
-| `dependencies` | isolated offline dependency installation and import validation |
-| `preflight` | model/data integrity plus NPU BF16 backward and Ray resource checks |
+| `dependencies` | isolated offline dependency installation |
+| `preflight` | legacy setup-only mode; no compatibility checks or training |
 | `smoke` | one reduced Vision-OPD optimization step and checkpoint |
 | `train` | full configured training lifecycle (default) |
 
-Move through these gates on a new image. A failure remains at the smallest
-relevant stage and the next run reuses the verified venv and assets.
+Normal use can start directly with `train`. Real installation, imports and
+training errors remain visible and the next run reuses the completed venv.
 
 ## Data and training
 
@@ -328,21 +325,22 @@ bash scripts/serve_vision_opd_ascend.sh <merged_model_path>
 The option name `--gpu-memory-utilization` is retained because it is the public
 vLLM CLI name; vLLM-Ascend applies it to NPU memory.
 
-## Preflight checks
+## Optional manual diagnostics
 
-The launchers automatically run:
+The launchers do not automatically run compatibility checks. For manual
+diagnosis only, you can explicitly run:
 
 ```bash
 python scripts/check_ascend_env.py --min-npus 8
 ```
 
-It checks every exact version from all Ascend lock files, the Qwen3.5 API used
+This optional command checks every exact version from all Ascend lock files, the Qwen3.5 API used
 by Vision-OPD, vLLM's Ascend platform registration, required imports, CANN
 environment loading, visible NPU count, torch-npu, loaded transformer patches,
 Ray's `NPU` resources, `npu-smi`, and a small BF16 forward/backward operation.
 `pip check` output is accepted only for the explicitly enumerated
-CUDA/plugin metadata entries superseded by the official Ascend matrix; every other
-missing or conflicting dependency fails installation.
+CUDA/plugin metadata entries superseded by the official Ascend matrix. Its
+result does not participate in the normal training lifecycle.
 Repository-only validation, which does not require Ascend hardware or
 dependencies, is available as:
 

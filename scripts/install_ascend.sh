@@ -39,9 +39,7 @@ done
 
 MACHINE="$(uname -m)"
 if [[ "$MACHINE" != "aarch64" ]]; then
-    echo "Unsupported training worker architecture: $MACHINE (expected aarch64 for Atlas 910B)." >&2
-    echo "Do not build the NPU environment in the x86_64 WebStudio session." >&2
-    exit 2
+    echo "WARNING: worker architecture is $MACHINE; Atlas 910B normally uses aarch64. Continuing." >&2
 fi
 
 # Resolve Python, ABI-specific wheelhouse and versioned venv as one unit. The
@@ -51,25 +49,7 @@ source "$PROJECT_ROOT/scripts/resolve_ascend_runtime.sh"
 BOOTSTRAP_PYTHON="$VOPD_BOOTSTRAP_PYTHON"
 VENV_DIR="$VOPD_VENV_DIR"
 
-_vopd_python_supported() {
-    "$1" -c 'import os, sys; expected=tuple(map(int, os.environ["VOPD_PYTHON_VERSION"].split("."))); raise SystemExit(0 if sys.version_info[:2] == expected else 1)' \
-        >/dev/null 2>&1
-}
-
 _vopd_glibc_version="$(ldd --version 2>/dev/null | head -n 1 | grep -Eo '[0-9]+\.[0-9]+' | tail -n 1 || true)"
-if [[ -n "${VOPD_MIN_GLIBC:-}" && -n "$_vopd_glibc_version" ]]; then
-    if ! "$BOOTSTRAP_PYTHON" - "$_vopd_glibc_version" "$VOPD_MIN_GLIBC" <<'PY'
-import sys
-actual = tuple(map(int, sys.argv[1].split(".")))
-minimum = tuple(map(int, sys.argv[2].split(".")))
-raise SystemExit(0 if actual >= minimum else 1)
-PY
-    then
-        echo "Worker glibc $_vopd_glibc_version is older than required ${VOPD_MIN_GLIBC}." >&2
-        echo "The prebuilt vLLM 0.18 aarch64 wheel requires a newer worker image." >&2
-        exit 2
-    fi
-fi
 
 echo "Vision-OPD dependency target"
 echo "  worker_arch:      $MACHINE"
@@ -78,7 +58,7 @@ echo "  python_target:    $VOPD_PYTHON_VERSION ($VOPD_PYTHON_TAG)"
 echo "  venv:             $VENV_DIR"
 echo "  wheelhouse:       $VOPD_LOCAL_WHEEL_DIR"
 echo "  stack_profile:    $VOPD_STACK_PROFILE"
-echo "  glibc:            ${_vopd_glibc_version:-unknown} (minimum ${VOPD_MIN_GLIBC:-unset})"
+echo "  glibc:            ${_vopd_glibc_version:-unknown}"
 echo "  runtime_lock:     $REQUIREMENTS_FILE"
 echo "  npu_core_lock:    $CORE_REQUIREMENTS_FILE"
 echo "  plugin_lock:      $PLUGIN_REQUIREMENTS_FILE"
@@ -129,16 +109,6 @@ if [[ ! -x "$VENV_DIR/bin/python" ]]; then
 fi
 
 RUNTIME_PYTHON="$VENV_DIR/bin/python"
-if grep -Eiq '^include-system-site-packages[[:space:]]*=[[:space:]]*true' "$VENV_DIR/pyvenv.cfg"; then
-    echo "Runtime venv exposes base-image packages, which can leak an incompatible torch_npu into this profile: $VENV_DIR" >&2
-    echo "Use the project-generated isolated venv (include-system-site-packages = false)." >&2
-    exit 2
-fi
-if ! _vopd_python_supported "$RUNTIME_PYTHON"; then
-    echo "Existing venv uses an unsupported Python: $($RUNTIME_PYTHON --version 2>&1)" >&2
-    echo "Delete $VENV_DIR or point VOPD_VENV_DIR to a new directory." >&2
-    exit 2
-fi
 
 PIP_ARGS=(
     --disable-pip-version-check
@@ -170,19 +140,11 @@ if [[ -n "${VOPD_PIP_TRUSTED_HOST:-}" ]]; then
 fi
 if [[ -n "${VOPD_LOCAL_WHEEL_DIR:-}" ]]; then
     LOCAL_WHEEL_DIR="$(_vopd_resolve_path "$VOPD_LOCAL_WHEEL_DIR")"
-    if [[ ! -d "$LOCAL_WHEEL_DIR" ]]; then
-        echo "Configured VOPD_LOCAL_WHEEL_DIR does not exist: $LOCAL_WHEEL_DIR" >&2
-        exit 2
+    if [[ -d "$LOCAL_WHEEL_DIR" ]]; then
+        PIP_ARGS+=(--find-links "$LOCAL_WHEEL_DIR")
+    else
+        echo "WARNING: configured wheel directory does not exist: $LOCAL_WHEEL_DIR; pip will continue with the remaining sources." >&2
     fi
-    PIP_ARGS+=(--find-links "$LOCAL_WHEEL_DIR")
-fi
-
-if [[ "${VOPD_PIP_NO_INDEX:-0}" == "1" ]]; then
-    "$BOOTSTRAP_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
-        --project-root "$PROJECT_ROOT" \
-        --wheel-dir "$LOCAL_WHEEL_DIR" \
-        --python-version "$VOPD_PYTHON_VERSION" \
-        --require-manifests
 fi
 
 # Upgrade the isolated installer from the declared source as well. In offline
@@ -191,19 +153,6 @@ fi
     "${PIP_ARGS[@]}" \
     --upgrade \
     "pip>=23.3,<26" setuptools wheel
-
-# Resolve the clean environment before mutating its NPU stack. This catches an
-# incomplete offline wheelhouse at the beginning of the task rather than after
-# half of the packages have been installed. Hardware plugins are intentionally
-# excluded because they are installed --no-deps below.
-echo "[install 0/4] Resolving the complete worker environment without installation..."
-"$RUNTIME_PYTHON" -m pip install \
-    "${PIP_ARGS[@]}" \
-    --dry-run \
-    --ignore-installed \
-    --constraint "$CORE_REQUIREMENTS_FILE" \
-    -r "$CORE_REQUIREMENTS_FILE" \
-    -r "$REQUIREMENTS_FILE"
 
 echo "[install 1/4] Installing the ${VOPD_STACK_PROFILE} / Python ${VOPD_PYTHON_VERSION} compatibility unit..."
 echo "  primary_index:    ${VOPD_PIP_INDEX_URL:-pip default}"
@@ -250,31 +199,13 @@ _vopd_install_empty_vllm() {
         "vllm-ascend==0.18.0"
 }
 
-_vopd_vllm_importable() {
-    VLLM_PLUGINS=ascend "$RUNTIME_PYTHON" -c '
-import vllm
-import vllm_ascend
-from vllm.platforms import current_platform
-if getattr(current_platform, "device_type", None) != "npu":
-    raise RuntimeError(f"vLLM platform is {type(current_platform).__name__}, not Ascend NPU")
-print(f"vLLM import check: {vllm.__version__}; {type(current_platform).__name__}")
-'
-}
-
 if "$RUNTIME_PYTHON" -m pip install \
     "${PIP_ARGS[@]}" \
     --upgrade \
     --only-binary=:all: \
     --no-deps \
     -r "$PLUGIN_REQUIREMENTS_FILE"; then
-    if ! _vopd_vllm_importable; then
-        if [[ "${VOPD_VLLM_ALLOW_SOURCE_FALLBACK:-0}" != "1" ]]; then
-            echo "The prebuilt vLLM wheel cannot load with the NPU stack and source fallback is disabled." >&2
-            exit 1
-        fi
-        echo "The prebuilt vLLM wheel cannot load with the selected NPU ABI; rebuilding it..."
-        _vopd_install_empty_vllm
-    fi
+    echo "Prebuilt vLLM and vLLM-Ascend packages installed; runtime loading is left to training."
 else
     if [[ "${VOPD_VLLM_ALLOW_SOURCE_FALLBACK:-0}" != "1" ]]; then
         echo "Prebuilt vLLM/vLLM-Ascend installation failed and source fallback is disabled." >&2
@@ -284,14 +215,10 @@ else
     echo "Prebuilt vLLM wheel is incompatible or unavailable; using the source fallback..."
     _vopd_install_empty_vllm
 fi
-_vopd_vllm_importable
 
 echo "[install 4/4] Installing the local Vision-OPD package..."
 "$RUNTIME_PYTHON" -m pip install "${PIP_ARGS[@]}" --no-build-isolation --no-deps --editable "$PROJECT_ROOT"
 
-# Validate every direct pin, every import used by the active training path and
-# all dependency metadata except the documented accelerator/plugin divergences.
-"$RUNTIME_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_env.py" --dependencies-only
 printf '%s\n' "$INSTALL_FINGERPRINT" > "$MARKER_FILE"
 
 echo "Vision-OPD Ascend Python environment is ready: $RUNTIME_PYTHON"

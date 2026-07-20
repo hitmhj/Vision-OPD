@@ -430,8 +430,6 @@ def check_static(project_root: Path) -> bool:
         "VOPD_RUN_MODE",
         "probe_ascend_worker.sh",
         "resolve_ascend_runtime.sh",
-        "check_ascend_assets.py",
-        "check_ascend_env.py",
         "run_vision_opd_ascend.sh",
     ]
     for stage in job_entry_stages:
@@ -456,7 +454,7 @@ def check_static(project_root: Path) -> bool:
         encoding="utf-8"
     )
     for required in (
-        "VOPD_SUPPORTED_PYTHONS",
+        "VOPD_PYTHON_PREFERENCE",
         "VOPD_TARGET_PYTHON",
         "VOPD_PYTHON_VERSION",
         "VOPD_PYTHON_TAG",
@@ -483,13 +481,9 @@ def check_static(project_root: Path) -> bool:
         "-m venv",
         "-m pip install",
         "--constraint",
-        "--dry-run",
-        "check_ascend_assets.py",
-        "--require-manifests",
         "--only-binary=:all:",
         "--no-deps",
         '--editable "$PROJECT_ROOT"',
-        "--dependencies-only",
         "resolve_ascend_runtime.sh",
         "VOPD_PYTHON_VERSION",
     ):
@@ -511,9 +505,6 @@ def check_static(project_root: Path) -> bool:
         "antlr4-python3-runtime==4.9.3",
         "pip download",
         "check_ascend_assets.py",
-        "--write-wheel-manifest",
-        "--require-manifests",
-        "--expected-model-repo-id",
         "--platform manylinux_2_28_aarch64",
         "VOPD_PREPARE_TARGET_PYTHON",
         "TARGET_PYTHON_TAG",
@@ -604,12 +595,11 @@ def check_static(project_root: Path) -> bool:
         "VOPD_INSTALL_MODE",
         "VOPD_RUN_MODE",
         "VOPD_STACK_PROFILE",
-        "VOPD_SUPPORTED_PYTHONS",
+        "VOPD_PYTHON_PREFERENCE",
         "VOPD_TARGET_PYTHON",
         "VOPD_PREPARE_TARGET_PYTHON",
         "VOPD_WHEEL_ROOT",
         "VOPD_RUNTIME_ROOT",
-        "VOPD_MIN_GLIBC",
         "VOPD_VENV_DIR",
         "VOPD_ASCEND_REQUIREMENTS",
         "VOPD_ASCEND_CORE_REQUIREMENTS",
@@ -632,11 +622,9 @@ def check_static(project_root: Path) -> bool:
         "VOPD_PIP_CONFIG_FILE",
         "VOPD_PIP_NO_INDEX",
         "VOPD_EXPECTED_CANN_VERSION",
-        "VOPD_REQUIRE_CANN_VERSION_MATCH",
         "CANN_ENV_SCRIPT",
         "NNAL_ENV_SCRIPT",
         "ASDSIP_ENV_SCRIPT",
-        "VOPD_REQUIRE_ASDSIP",
     ):
         if variable not in env_template:
             fail(f"Ascend lifecycle configuration is missing: {variable}")
@@ -651,7 +639,6 @@ def check_static(project_root: Path) -> bool:
         'VOPD_HF_OFFLINE="${VOPD_HF_OFFLINE:-1}"',
         'VOPD_REQUIRE_LOCAL_MODEL="${VOPD_REQUIRE_LOCAL_MODEL:-1}"',
         'VOPD_EXPECTED_CANN_VERSION="${VOPD_EXPECTED_CANN_VERSION:-8.5.1}"',
-        'VOPD_REQUIRE_CANN_VERSION_MATCH="${VOPD_REQUIRE_CANN_VERSION_MATCH:-0}"',
         'DO_NOT_TRACK="${DO_NOT_TRACK:-1}"',
         'HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"',
         'VLLM_NO_USAGE_STATS="${VLLM_NO_USAGE_STATS:-1}"',
@@ -672,12 +659,11 @@ def check_static(project_root: Path) -> bool:
 
     rank_position = job_entry.find('if [[ "${VOPD_SINGLE_DRIVER_GUARD:-1}" == "1" ]]')
     worker_position = job_entry.find('command -v npu-smi')
-    model_position = job_entry.find('check_ascend_assets.py')
     installer_position = job_entry.find('install_ascend.sh')
-    if min(rank_position, worker_position, model_position, installer_position) < 0 or not (
-        rank_position < worker_position < model_position < installer_position
+    if min(rank_position, worker_position, installer_position) < 0 or not (
+        rank_position < worker_position < installer_position
     ):
-        fail("job entry order must be rank guard -> NPU worker guard -> model check -> install")
+        fail("job entry order must be rank guard -> worker observation -> install")
         success = False
 
     gitignore = (project_root / ".gitignore").read_text(encoding="utf-8")
@@ -740,11 +726,7 @@ def check_runtime(project_root: Path, min_npus: int) -> bool:
             f"CANN version is {detected_cann or 'unknown'}; "
             f"tested baseline is {expected_cann}"
         )
-        if os.environ.get("VOPD_REQUIRE_CANN_VERSION_MATCH", "0") == "1":
-            fail(message + " and strict matching is enabled")
-            success = False
-        else:
-            warn(message + "; continuing because runtime capability checks are authoritative")
+        warn(message + "; CANN version matching is advisory")
     else:
         ok(f"CANN {detected_cann}")
 

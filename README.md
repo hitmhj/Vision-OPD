@@ -66,10 +66,9 @@ the preparation script.
 
 The entry exports the configuration as real environment variables and performs
 the complete training lifecycle: fingerprint the worker, automatically select
-an available Python 3.10/3.11 and its ABI-matched wheelhouse, create or reuse a versioned venv,
-install the official CANN
-8.5.1/vLLM-Ascend 0.18 Python
-stack, load CANN/NNAL, prepare data, preflight, train, save checkpoints, and
+an available Python (preferring 3.11/3.10) and its ABI-named wheelhouse, create
+or reuse a versioned venv, install the declared Ascend Python stack, load
+CANN/NNAL, prepare data, train, save checkpoints, and
 optionally merge the latest checkpoint. ModelArts-injected `VOPD_*` values take
 precedence over file defaults.
 
@@ -78,26 +77,22 @@ the vLLM hardware-plugin lock. The fixed unit is CANN 8.5.1, torch 2.9.0,
 `torch-npu==2.9.0.post1+git4c901a4`,
 `triton-ascend==3.2.0.dev20260322`, and vLLM/vLLM-Ascend 0.18.0.
 The tested CANN baseline remains 8.5.1, but a different detected CANN version
-is a warning by default. Actual torch-npu forward/backward, vLLM-Ascend and Ray
-capability checks decide whether execution may continue. Set
-`VOPD_REQUIRE_CANN_VERSION_MATCH=1` only to restore the strict hard stop.
+is only logged as a warning. The launch path has no hard CANN, Python, glibc,
+architecture, asset-manifest, dependency-import or NPU-count compatibility
+gate; installation and training report the first real failure.
 
 Production installation is fully offline by default and uses
 `--no-index --find-links`. Put the complete ABI-matched wheelhouse in
 `envs/wheels/cp310-aarch64` or `envs/wheels/cp311-aarch64`, or set
-`VOPD_LOCAL_WHEEL_DIR` to its mounted location. Asset preparation writes a
-SHA-256 inventory only after pip resolves the complete dependency closure. The
-launcher verifies that manifest and repeats resolution with `pip --dry-run`
-before installing the NPU/runtime stack.
+`VOPD_LOCAL_WHEEL_DIR` to its mounted location. The worker now passes the
+wheelhouse directly to pip without an additional manifest or dry-run gate.
 
 The production entry also defaults to Hugging Face offline mode. Mount the
 model weights under `envs/models/Qwen3.5-4B`, or set `VOPD_MODEL_PATH` to
-another local directory. Preparation records the immutable model revision in
-the model directory; the training entry rejects a missing or mismatched asset
-manifest.
-With `VOPD_REQUIRE_LOCAL_MODEL=1` and `VOPD_HF_OFFLINE=1` (the defaults), a
-missing model or dataset fails immediately instead of attempting an external
-download.
+another local directory. Preparation may record the selected model revision,
+but the training entry no longer rejects an absent or different manifest.
+With `VOPD_HF_OFFLINE=1` (the default), the worker never attempts an external
+model download; the actual model loader reports missing model files.
 
 Every Vision-OPD command derives `PROJECT_ROOT` from its launcher location, so
 the complete repository can be mounted at any path. The vendor environment
@@ -106,7 +101,8 @@ loaded.
 
 The NPU task still has one fixed command. `VOPD_RUN_MODE` controls how far that
 same entry proceeds: `probe`, `dependencies`, `preflight`, `smoke`, or the
-default `train`. For the first task on a new image, use
+default `train`. The legacy `preflight` mode now means setup-only and performs
+no compatibility tests. For the first task on a new image, use
 `VOPD_RUN_MODE=probe`; it prints Python, exact CANN evidence, glibc, NPU and
 rank information without installing dependencies.
 

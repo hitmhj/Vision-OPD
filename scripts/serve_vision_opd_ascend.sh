@@ -52,10 +52,6 @@ if [[ "${VOPD_HF_OFFLINE:-1}" == "1" ]]; then
     export HF_HUB_OFFLINE=1
     export TRANSFORMERS_OFFLINE=1
 fi
-"$PYTHON_BIN" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
-    --project-root "$PROJECT_ROOT" \
-    --model-dir "$MODEL_PATH"
-
 if [[ "${VOPD_ASCEND_ENV_READY:-0}" != "1" ]]; then
     # shellcheck source=ascend_env.sh
     source "$PROJECT_ROOT/scripts/ascend_env.sh"
@@ -65,9 +61,6 @@ export TARGET_DEVICE=ascend
 
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.85}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-Vision-OPD-4B}"
-
-"$PYTHON_BIN" "$PROJECT_ROOT/scripts/check_ascend_env.py" \
-    --min-npus "$TENSOR_PARALLEL_SIZE"
 
 exec "$VLLM_BIN" serve "$MODEL_PATH" \
     --tensor-parallel-size "$TENSOR_PARALLEL_SIZE" \

@@ -253,33 +253,13 @@ echo "  check_only:         $CHECK_ONLY"
 if [[ "$SKIP_MODEL" != "1" && "$CHECK_ONLY" != "1" ]]; then
     if [[ -n "$MODEL_SOURCE_DIR" ]]; then
         MODEL_SOURCE_DIR="$(_vopd_resolve_path "$MODEL_SOURCE_DIR")"
-        "$PREPARE_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
-            --project-root "$PROJECT_ROOT" \
-            --model-dir "$MODEL_SOURCE_DIR"
         if [[ "$(cd "$MODEL_SOURCE_DIR" && pwd)" != "$(cd "$MODEL_DIR" && pwd)" ]]; then
-            echo "Copying the validated model snapshot from $MODEL_SOURCE_DIR ..."
+            echo "Copying the configured model snapshot from $MODEL_SOURCE_DIR ..."
             cp -a "$MODEL_SOURCE_DIR"/. "$MODEL_DIR"/
         fi
         _vopd_write_model_manifest "$VOPD_MODEL_REVISION" "local-copy"
-    elif "$PREPARE_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
-        --project-root "$PROJECT_ROOT" \
-        --model-dir "$MODEL_DIR" \
-        --expected-model-repo-id "$VOPD_MODEL_REPO_ID" \
-        --expected-model-revision "$VOPD_MODEL_REVISION" \
-        --require-manifests >/dev/null 2>&1; then
-        echo "Complete model snapshot already exists; download skipped."
-    elif [[ -f "$MODEL_MANIFEST" ]]; then
-        "$PREPARE_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
-            --project-root "$PROJECT_ROOT" \
-            --model-dir "$MODEL_DIR" \
-            --expected-model-repo-id "$VOPD_MODEL_REPO_ID" \
-            --expected-model-revision "$VOPD_MODEL_REVISION" \
-            --require-manifests
-        exit 1
-    elif "$PREPARE_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
-        --project-root "$PROJECT_ROOT" --model-dir "$MODEL_DIR" >/dev/null 2>&1; then
-        echo "Recording the configured revision for the existing model snapshot..."
-        _vopd_write_model_manifest "$VOPD_MODEL_REVISION" "existing-local-snapshot"
+    elif [[ -f "$MODEL_MANIFEST" || -f "$MODEL_DIR/config.json" ]]; then
+        echo "Existing model directory found; automatic integrity/version checks are disabled and download is skipped."
     elif [[ "$ONLINE" == "1" ]]; then
         HUB_PYTHON="$PREPARE_PYTHON"
         if ! "$HUB_PYTHON" -c 'import huggingface_hub' >/dev/null 2>&1; then
@@ -490,29 +470,19 @@ if [[ "$SKIP_WHEELS" != "1" && "$CHECK_ONLY" != "1" ]]; then
         --no-deps \
         -r "$PROJECT_ROOT/requirements-ascend-plugins.txt"
 
-    # This manifest is written only after pip has successfully resolved the
-    # full generic/core dependency closure and collected both hardware plugins.
-    "$PREPARE_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_assets.py" \
-        --project-root "$PROJECT_ROOT" \
-        --wheel-dir "$WHEEL_DIR" \
-        --python-version "$TARGET_PYTHON" \
-        --write-wheel-manifest
 fi
 
-_vopd_check_args=(--project-root "$PROJECT_ROOT")
-if [[ "$SKIP_MODEL" != "1" ]]; then
-    _vopd_check_args+=(
-        --model-dir "$MODEL_DIR"
-        --expected-model-repo-id "$VOPD_MODEL_REPO_ID"
-        --expected-model-revision "$VOPD_MODEL_REVISION"
-    )
+if [[ "$CHECK_ONLY" == "1" ]]; then
+    _vopd_check_args=(--project-root "$PROJECT_ROOT")
+    if [[ "$SKIP_MODEL" != "1" ]]; then
+        _vopd_check_args+=(--model-dir "$MODEL_DIR")
+    fi
+    if [[ "$SKIP_WHEELS" != "1" ]]; then
+        _vopd_check_args+=(--wheel-dir "$WHEEL_DIR" --python-version "$TARGET_PYTHON")
+    fi
+    "$PREPARE_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_assets.py" "${_vopd_check_args[@]}"
 fi
-if [[ "$SKIP_WHEELS" != "1" ]]; then
-    _vopd_check_args+=(--wheel-dir "$WHEEL_DIR" --python-version "$TARGET_PYTHON")
-fi
-_vopd_check_args+=(--require-manifests)
-"$PREPARE_PYTHON" "$PROJECT_ROOT/scripts/check_ascend_assets.py" "${_vopd_check_args[@]}"
 
-echo "Vision-OPD portable assets are ready."
+echo "Vision-OPD portable asset operations completed; automatic compatibility checks were not run."
 echo "Next command on the Atlas 910B worker:"
 echo "  bash scripts/start_vision_opd_ascend.sh"

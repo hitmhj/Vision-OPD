@@ -61,9 +61,4 @@ export ACTOR_OPTIMIZER_OFFLOAD="${ACTOR_OPTIMIZER_OFFLOAD:-True}"
 export REF_PARAM_OFFLOAD="${REF_PARAM_OFFLOAD:-True}"
 export PYTHON_BIN
 
-if [[ "${VOPD_SKIP_PREFLIGHT:-0}" != "1" ]]; then
-    "$PYTHON_BIN" "$PROJECT_ROOT/scripts/check_ascend_env.py" \
-        --min-npus "$TRAINER_N_GPUS_PER_NODE"
-fi
-
 exec bash "$PROJECT_ROOT/scripts/run_vision_opd.sh" "$@"
