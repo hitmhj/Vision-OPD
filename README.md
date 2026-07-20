@@ -49,7 +49,7 @@ are deliberately separate:
 
 ```bash
 # Run once in WebStudio or another preparation host. This default is offline:
-# The current deployment target is CPython 3.10/aarch64 (cp310).
+# The current worker exposes Python 3.11; runtime selection itself remains automatic.
 VOPD_INTERNAL_WHEEL_DIRS=/path/to/internal/whls \
 VOPD_MODEL_SOURCE_DIR=/path/to/Qwen3.5-4B \
 bash scripts/prepare_ascend_assets.sh
@@ -65,8 +65,8 @@ worker network access: the training entry remains offline and never invokes
 the preparation script.
 
 The entry exports the configuration as real environment variables and performs
-the complete training lifecycle: fingerprint the worker, select the configured
-Python 3.10 target and matching cp310 wheelhouse, create or reuse a versioned venv,
+the complete training lifecycle: fingerprint the worker, automatically select
+an available Python 3.10/3.11 and its ABI-matched wheelhouse, create or reuse a versioned venv,
 install the official CANN
 8.5.1/vLLM-Ascend 0.18 Python
 stack, load CANN/NNAL, prepare data, preflight, train, save checkpoints, and

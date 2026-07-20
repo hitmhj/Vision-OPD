@@ -49,7 +49,7 @@ the repository installer. `npu-smi info` must succeed.
 
 Run the asset preparation entry before the training entry. It derives every
 default from the repository root and creates `envs/models/Qwen3.5-4B`,
-`envs/wheels/cp310-aarch64` (the current default), `envs/cache` and `envs/runtime`.
+`envs/wheels/cp311-aarch64` (the current preparation default), `envs/cache` and `envs/runtime`.
 
 The production-safe default uses no network. The preparation entry supports
 x86_64/Python 3.9 WebStudio by passing an explicit CPython 3.10/3.11 aarch64 target
@@ -67,7 +67,7 @@ only the selected cp310/cp311 aarch64, compatible `abi3/aarch64`, and universal
 wheels are collected. Select the target before preparation when necessary:
 
 ```bash
-VOPD_PREPARE_TARGET_PYTHON=3.10 bash scripts/prepare_ascend_assets.sh --online
+VOPD_PREPARE_TARGET_PYTHON=3.11 bash scripts/prepare_ascend_assets.sh --online
 ```
 
 If
@@ -117,8 +117,8 @@ The same entry performs, in order:
 8. optionally merge the latest checkpoint according to `VOPD_AUTO_MERGE`.
 
 Production installation is offline by default. Mount a complete wheelhouse for
-the worker Python ABI. The current default `VOPD_TARGET_PYTHON=3.10` selects
-`envs/wheels/cp310-aarch64`; Python 3.11 remains an explicit override. Set
+the worker Python ABI. With `VOPD_TARGET_PYTHON=auto`, the resolver selects an
+available Python 3.10/3.11 and its matching cp310/cp311 wheelhouse. Set
 `VOPD_LOCAL_WHEEL_DIR` only for a nonstandard mounted directory.
 `VOPD_PIP_NO_INDEX=1` is already the default.
 The earlier LLaMAFactory wheelhouse is not complete for Vision-OPD and cannot

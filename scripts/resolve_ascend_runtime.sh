@@ -142,14 +142,19 @@ _vopd_profile_select_python() {
         done
     done
 
-    echo "No supported Python was found on the NPU worker." >&2
+    if [[ "$requested" == "auto" ]]; then
+        echo "No supported Python 3.10/3.11 was found on the NPU worker." >&2
+    else
+        echo "No Python $requested interpreter was found; VOPD_TARGET_PYTHON explicitly requires that ABI." >&2
+    fi
     echo "Detected candidates:" >&2
     for candidate in python3.11 python3.10 python3 python; do
         path="$(_vopd_profile_candidate_path "$candidate")"
         [[ -n "$path" ]] || continue
         echo "  $candidate -> $path ($($path --version 2>&1 || true))" >&2
     done
-    echo "Use a Python 3.10/3.11 worker image or inject VOPD_BOOTSTRAP_PYTHON." >&2
+    echo "Use VOPD_TARGET_PYTHON=auto to select an available Python 3.10/3.11 interpreter." >&2
+    echo "Alternatively inject an ABI-matched VOPD_BOOTSTRAP_PYTHON and wheelhouse." >&2
     return 1
 }
 
