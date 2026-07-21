@@ -49,6 +49,9 @@ def main() -> None:
         "warning-only version probe must not import native/runtime packages"
     )
     assert "PYTHONFAULTHANDLER=1" in launcher, "native training failures should emit Python fault diagnostics"
+    assert '${NPU_ASD_CONFIG:=enable:false}' in env_text, (
+        "torch-npu 2.6 must skip the disabled optional ASD native capability probe"
+    )
 
     used = set(re.findall(r"\$\{(VOPD_[A-Z0-9_]+)", launcher))
     defined = set(re.findall(r"\$\{(VOPD_[A-Z0-9_]+):=", env_text))

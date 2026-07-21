@@ -78,6 +78,7 @@ echo "[env] project=${PROJECT_ROOT}"
 echo "[env] image=${MA_CONTAINER_IMAGE_URI:-unknown}"
 echo "[env] python=$(${VOPD_PYTHON} --version 2>&1)"
 echo "[env] ray_tmpdir=${RAY_TMPDIR}"
+echo "[env] npu_asd_config=${NPU_ASD_CONFIG}"
 command -v npu-smi >/dev/null 2>&1 && npu-smi info || true
 
 if [[ "${VOPD_INSTALL_DEPS}" == "1" && "${VOPD_DRY_RUN}" != "1" ]]; then
