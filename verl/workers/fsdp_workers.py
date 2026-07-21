@@ -517,19 +517,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         fsdp_enable_zero3 = fsdp_config.reshard_after_forward
         sharding_strategy = get_sharding_strategy(fsdp_mesh, fsdp_enable_zero3)
 
-        # The Ascend 2.6 stack loads the CPU-to-NPU copy implementation lazily.
-        # Let that one-time loader path finish on a tiny tensor before FSDP1
-        # recursively moves the model states.  Otherwise a loader failure here
-        # terminates the Ray worker with SIGSEGV and cannot be caught in Python.
-        if device_name == "npu" and not getattr(self, "_npu_copy_prewarmed", False):
-            if self.rank == 0:
-                print("[npu] prewarming CPU-to-NPU copy before FSDP initialization")
-            device = torch.device(device_name, get_device_id())
-            copy_probe = torch.empty(1, dtype=torch.float32, device="cpu").to(device)
-            get_torch_device().synchronize()
-            del copy_probe
-            self._npu_copy_prewarmed = True
-
         # TODO: add transformer policy
         # We force reference policy to use CPUOffload to save memory.
         # We force turn off CPUOffload for actor because it causes incorrect results when using grad accumulation
@@ -820,6 +807,17 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
     def init_model(self):
         from verl.workers.actor import DataParallelPPOActor
         from verl.workers.actor.dp_actor import TrustRegionTeacher
+
+        # The Ray dispatch wrapper has just bound this execution thread to its
+        # logical NPU.  Verify the context before loading the full model so a
+        # native runtime problem is localized to this tiny transfer.
+        if device_name == "npu":
+            device = torch.device(device_name, get_device_id())
+            copy_probe = torch.empty(1, dtype=torch.float32, device="cpu").to(device)
+            get_torch_device().synchronize()
+            del copy_probe
+            if self.rank == 0:
+                print(f"[npu] Ray execution thread is bound to logical device {device.index}")
 
         # This is used to import external_lib into the huggingface systems
         import_external_libs(self.config.model.get("external_lib", None))

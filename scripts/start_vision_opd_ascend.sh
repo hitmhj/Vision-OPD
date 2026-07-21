@@ -62,13 +62,8 @@ export RAY_TMPDIR="${VOPD_RAY_TMPDIR}"
 export ASCEND_LAUNCH_BLOCKING="${ASCEND_LAUNCH_BLOCKING:-0}"
 export ASCEND_SLOG_PRINT_TO_STDOUT="${ASCEND_SLOG_PRINT_TO_STDOUT:-0}"
 export ASCEND_GLOBAL_LOG_LEVEL="${ASCEND_GLOBAL_LOG_LEVEL:-3}"
-# Keep the first native NPU copies synchronous.  torch-npu 2.6.0 may lazily
-# load copy kernels while FSDP recursively moves parameters to the NPU; the
-# multithreaded task queue can turn a loader failure into an unrecoverable
-# native SIGSEGV.  The VOPD-specific settings intentionally override image
-# defaults; they may be changed by the managed platform after validation.
-export TASK_QUEUE_ENABLE="${VOPD_TASK_QUEUE_ENABLE}"
-export COMBINED_ENABLE="${VOPD_COMBINED_ENABLE}"
+export TASK_QUEUE_ENABLE="${TASK_QUEUE_ENABLE:-2}"
+export COMBINED_ENABLE="${COMBINED_ENABLE:-1}"
 export HCCL_ASYNC_ERROR_HANDLING="${HCCL_ASYNC_ERROR_HANDLING:-0}"
 export HCCL_CONNECT_TIMEOUT="${HCCL_CONNECT_TIMEOUT:-7200}"
 export HCCL_EXEC_TIMEOUT="${HCCL_EXEC_TIMEOUT:-18000}"

@@ -36,6 +36,24 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
+def _bind_npu_to_current_ray_thread():
+    """Establish the thread-local Ascend context before a Ray worker call."""
+    if get_device_name() != "npu":
+        return
+
+    from verl.utils.device import get_torch_device
+    from verl.utils.ray_utils import ray_noset_visible_devices
+
+    # Ray normally exposes exactly one physical NPU to each actor, remapped to
+    # logical device 0.  When Ray's visible-device management is explicitly
+    # disabled, LOCAL_RANK remains the device index instead.
+    device_id = int(os.environ.get("LOCAL_RANK", "0")) if ray_noset_visible_devices() else 0
+    # torch-npu caches the current device in thread-local storage.  Ray async
+    # actors execute registered worker methods on an event-loop thread that is
+    # different from the constructor thread, so bind before every dispatch.
+    get_torch_device().set_device(device_id)
+
+
 def get_random_string(length: int) -> str:
     import random
     import string
@@ -840,10 +858,12 @@ def _bind_workers_method_to_parent(cls, key, user_defined_cls):
 
             def generate_function(name, key=key):
                 def func(self, *args, **kwargs):
+                    _bind_npu_to_current_ray_thread()
                     # dispatch to the actual worker
                     return getattr(self.worker_dict[key], name)(*args, **kwargs)
 
                 async def async_func(self, *args, **kwargs):
+                    _bind_npu_to_current_ray_thread()
                     # dispatch to the actual worker
                     return await getattr(self.worker_dict[key], name)(*args, **kwargs)
 
