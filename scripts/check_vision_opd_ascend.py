@@ -57,6 +57,8 @@ def main() -> None:
         "transformers 5.5 exposes Qwen2_5_VLRMSNorm for Qwen2.5-VL"
     )
     assert "modeling_qwen2_5_vl.Qwen2RMSNorm" not in npu_patch
+    assert 'TRAIN_CMD+=("$@")' not in launcher, "raw platform arguments must not be forwarded to Hydra"
+    assert "only Hydra key=value overrides are forwarded" in launcher
 
     used = set(re.findall(r"\$\{(VOPD_[A-Z0-9_]+)", launcher))
     defined = set(re.findall(r"\$\{(VOPD_[A-Z0-9_]+):=", env_text))

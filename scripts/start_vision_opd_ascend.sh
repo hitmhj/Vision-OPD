@@ -283,7 +283,18 @@ TRAIN_CMD=(
 if [[ "${VOPD_TOTAL_TRAINING_STEPS}" -gt 0 ]]; then
     TRAIN_CMD+=("trainer.total_training_steps=${VOPD_TOTAL_TRAINING_STEPS}")
 fi
-TRAIN_CMD+=("$@")
+
+IGNORED_PLATFORM_ARGS=()
+for argument in "$@"; do
+    if [[ "${argument}" == --* || "${argument}" != *=* ]]; then
+        IGNORED_PLATFORM_ARGS+=("${argument}")
+    else
+        TRAIN_CMD+=("${argument}")
+    fi
+done
+if [[ "${#IGNORED_PLATFORM_ARGS[@]}" -gt 0 ]]; then
+    echo "[WARNING] ignored ${#IGNORED_PLATFORM_ARGS[@]} platform launcher argument(s); only Hydra key=value overrides are forwarded"
+fi
 
 if [[ "${VOPD_DRY_RUN}" == "1" ]]; then
     printf '[dry-run] command:'

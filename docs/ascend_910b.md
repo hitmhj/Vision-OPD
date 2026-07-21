@@ -159,15 +159,12 @@ training, and merges the newest checkpoint without command prefixes:
 bash scripts/start_vision_opd_ascend.sh
 ```
 
-Useful overrides:
-
-```bash
-VOPD_INSTALL_DEPS=1 \
-VOPD_NPUS_PER_NODE=8 \
-VOPD_SAVE_FREQ=20 \
-VOPD_AUTO_MERGE=1 \
-bash scripts/start_vision_opd_ascend.sh
-```
+The platform command remains exactly the single command above. All required
+`VOPD_*` defaults are already enabled by `vision_opd_ascend.env`. Some managed
+platforms append unrelated `--name=value` task parameters to the entrypoint;
+the launcher reports and ignores those arguments instead of forwarding them to
+Hydra. Explicit Hydra overrides, when used outside that platform, retain the
+native `key=value` form.
 
 For an externally managed multi-node Ray cluster, set `VOPD_RAY_ADDRESS` and
 run the entrypoint on platform rank 0. Otherwise ModelArts variables
