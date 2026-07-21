@@ -100,6 +100,7 @@ class AsyncLLMServerManager:
         sampling_params: dict[str, Any],
         image_data: Optional[list[Any]] = None,
         video_data: Optional[list[Any]] = None,
+        text_data: Optional[str] = None,
     ) -> TokenOutput:
         """Generate tokens from prompt ids.
 
@@ -112,13 +113,16 @@ class AsyncLLMServerManager:
             TokenOutput: token output
         """
         server = self._choose_server(request_id)
-        output = await server.generate.remote(
+        generate_kwargs = dict(
             request_id=uuid4().hex,  # use new request_id for each turn
             prompt_ids=prompt_ids,
             sampling_params=sampling_params,
             image_data=image_data,
             video_data=video_data,
         )
+        if self.config.actor_rollout_ref.rollout.name == "hf":
+            generate_kwargs["text_data"] = text_data
+        output = await server.generate.remote(**generate_kwargs)
         return output
 
 
@@ -223,6 +227,7 @@ class AgentLoopBase(ABC):
         self.loop = get_event_loop()
         self.validate = False
         self.val_custom_chat_template = None
+        self._last_raw_prompt = None
 
     def _get_prompt_length(self) -> int | None:
         rollout_config = self.config.actor_rollout_ref.rollout
@@ -295,6 +300,7 @@ class AgentLoopBase(ABC):
                     **apply_kwargs,
                 ),
             )
+            self._last_raw_prompt = raw_prompt
 
             # split the videos and according metadatas
             if videos is not None:
@@ -313,6 +319,7 @@ class AgentLoopBase(ABC):
             )
             prompt_ids = model_inputs.pop("input_ids").squeeze(0).tolist()
         else:
+            self._last_raw_prompt = None
             prompt_ids = await self.loop.run_in_executor(
                 None,
                 lambda: self.tokenizer.apply_chat_template(
@@ -1011,7 +1018,9 @@ class AgentLoopManager:
             if self.worker_group
             else self.config.trainer.n_gpus_per_node * self.config.trainer.nnodes
         )
-        num_replicas = world_size // rollout_world_size
+        # Transformers rollout shares one FSDP actor.  Its Ray proxy fans every
+        # request out to all ranks collectively, so it is one logical replica.
+        num_replicas = 1 if self.config.actor_rollout_ref.rollout.name == "hf" else world_size // rollout_world_size
 
         rollout_config = self.config.actor_rollout_ref.rollout
         model_config = self.config.actor_rollout_ref.model

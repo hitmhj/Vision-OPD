@@ -326,7 +326,11 @@ class RLHFDataset(Dataset):
                         if image_bytes is not None:
                             image["image"] = Image.open(BytesIO(image_bytes))
                         elif "image" not in image and "path" in image:
-                            image["image"] = image["path"]
+                            image_path = image["path"]
+                            if not os.path.isabs(image_path):
+                                project_root = os.environ.get("VOPD_PROJECT_ROOT", os.getcwd())
+                                image_path = os.path.join(project_root, image_path)
+                            image["image"] = image_path
                         content_list.append({"type": "image", **image})
                     else:
                         raise TypeError(f"image must be dict or PIL.Image, unsupported image type: {type(image)}")

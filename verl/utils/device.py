@@ -12,6 +12,14 @@ import logging
 
 import torch
 
+# torch-npu registers the ``torch.npu`` namespace as an import side effect.  The
+# plugin is part of the Ascend image and must not be replaced by this project,
+# but importing it here makes device discovery independent of import order.
+try:
+    import torch_npu  # noqa: F401
+except ImportError:
+    torch_npu = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,7 +36,7 @@ def is_torch_npu_available(check_device=True) -> bool:
         bool: True if NPU is available, False otherwise.
     """
     try:
-        if not hasattr(torch, "npu"):
+        if torch_npu is None or not hasattr(torch, "npu"):
             return False
 
         if check_device:

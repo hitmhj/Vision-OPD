@@ -19,15 +19,28 @@ Vision-OPD is a regional-to-global on-policy self-distillation framework that tr
 
 ## Environment Setup
 
+### Atlas 910B (CANN 8.2 RC1 / PyTorch 2.6 image)
+
+The Ascend path is offline-first and reuses the image's matched
+PyTorch/torch-npu stack. Stage Qwen3.5-4B under `envs/models/Qwen3.5-4B`, stage a
+complete cp311-aarch64 wheelhouse under `envs/wheels/cp311-aarch64` when needed,
+then run:
+
 ```bash
-conda create -n vision-opd python=3.12 -y
-conda activate vision-opd
-pip install --upgrade pip
-pip install --no-deps -r requirements.txt
-pip install -e . --no-deps
-pip install flash-attn --no-build-isolation
-pip install causal-conv1d==1.6.1 --no-build-isolation
+VOPD_INSTALL_DEPS=1 bash scripts/start_vision_opd_ascend.sh
 ```
+
+Set `VOPD_INSTALL_DEPS=0` (the default) when the non-core requirements are
+already present. Do not use `torchrun`; the entrypoint creates the single Ray
+driver and FSDP/HCCL worker group. See [the Atlas 910B adaptation guide](docs/ascend_910b.md)
+for the compatibility matrix, paths, multi-node behavior, checkpoint merge,
+inference command, and diagnostics.
+
+### Original CUDA environment
+
+The repository root requirements now describe the Atlas 910B target and do not
+contain CUDA wheels. A CUDA deployment must use a separately validated CUDA
+lock; do not add CUDA packages to `requirements-ascend.txt`.
 
 ## Quick Start
 

@@ -65,11 +65,11 @@ def clean_question(problem: str) -> str:
     return text.strip()
 
 
-def build_record(item: dict[str, Any], data_dir: str) -> dict[str, Any]:
+def build_record(item: dict[str, Any], data_dir: str, path_root: str) -> dict[str, Any]:
     image_rel = item["images"][0]
     teacher_rel = item["teacher_images"][0]
-    image_path = os.path.join(data_dir, image_rel)
-    teacher_path = os.path.join(data_dir, teacher_rel)
+    image_path = os.path.relpath(os.path.join(data_dir, image_rel), path_root).replace(os.sep, "/")
+    teacher_path = os.path.relpath(os.path.join(data_dir, teacher_rel), path_root).replace(os.sep, "/")
     question = clean_question(item.get("problem", ""))
 
     return {
@@ -97,11 +97,12 @@ def convert_to_parquet(data_dir: str) -> None:
         sys.exit(1)
 
     print("Converting train.jsonl to train.parquet ...")
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     records = []
     with open(jsonl_path, encoding="utf-8") as f:
         for line in f:
             item = json.loads(line)
-            records.append(build_record(item, data_dir))
+            records.append(build_record(item, data_dir, project_root))
 
     dataset = datasets.Dataset.from_list(records)
     output_path = os.path.join(data_dir, "train.parquet")

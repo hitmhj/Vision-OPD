@@ -28,7 +28,7 @@ from torch.distributed.fsdp import ShardedOptimStateDictConfig, ShardedStateDict
 from transformers import GenerationConfig, PreTrainedTokenizer, ProcessorMixin
 from transformers.dynamic_module_utils import custom_object_save
 
-from verl.utils.device import is_cuda_available
+from verl.utils.device import get_device_name
 from verl.utils.fs import copy_to_local, is_non_local, local_mkdir_safe
 from verl.utils.fsdp_utils import fsdp_version, get_fsdp_full_state_dict, get_fsdp_state_ctx
 from verl.utils.logger import log_with_rank
@@ -120,13 +120,10 @@ class FSDPCheckpointManager(BaseCheckpointManager):
             )
 
         # every rank download its own checkpoint
-        state_dict_cfg = (
-            ShardedStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
-            if self.should_load_model
-            else None
-        )
+        accelerator_available = get_device_name() != "cpu"
+        state_dict_cfg = ShardedStateDictConfig(offload_to_cpu=accelerator_available) if self.should_load_model else None
         optim_cfg = (
-            ShardedOptimStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
+            ShardedOptimStateDictConfig(offload_to_cpu=accelerator_available)
             if self.should_load_optimizer
             else None
         )
@@ -216,8 +213,9 @@ class FSDPCheckpointManager(BaseCheckpointManager):
             )
 
         # every rank will save its own model and optim shard
-        state_dict_cfg = ShardedStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
-        optim_cfg = ShardedOptimStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
+        accelerator_available = get_device_name() != "cpu"
+        state_dict_cfg = ShardedStateDictConfig(offload_to_cpu=accelerator_available)
+        optim_cfg = ShardedOptimStateDictConfig(offload_to_cpu=accelerator_available)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             with get_fsdp_state_ctx(self.model, StateDictType.SHARDED_STATE_DICT, state_dict_cfg, optim_cfg):

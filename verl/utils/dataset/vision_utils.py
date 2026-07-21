@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from io import BytesIO
+import os
 from typing import Optional
 
 import torch
@@ -30,7 +31,10 @@ def process_image(image: dict | Image.Image, image_patch_size: int = 14) -> Imag
         assert "image" not in image, "Cannot have both `bytes` and `image`"
         image["image"] = Image.open(BytesIO(image_bytes))
     elif "image" not in image and "path" in image:
-        image["image"] = image["path"]
+        image_path = image["path"]
+        if not os.path.isabs(image_path):
+            image_path = os.path.join(os.environ.get("VOPD_PROJECT_ROOT", os.getcwd()), image_path)
+        image["image"] = image_path
 
     return fetch_image(image, image_patch_size=image_patch_size)
 

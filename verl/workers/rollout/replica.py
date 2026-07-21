@@ -18,6 +18,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, Callable, Optional
 
+import ray
 from omegaconf import DictConfig
 from pydantic import BaseModel
 from ray.actor import ActorHandle
@@ -227,6 +228,54 @@ class RolloutReplicaRegistry:
         return cls._registry[name]()
 
 
+@ray.remote(num_cpus=1)
+class HFRolloutServer:
+    """Serialize requests and fan each one out to every hybrid FSDP rank."""
+
+    def __init__(self, workers: list[ActorHandle]):
+        self.workers = workers
+        self._generate_lock = asyncio.Lock()
+
+    async def generate(self, **kwargs) -> TokenOutput:
+        async with self._generate_lock:
+            outputs = await asyncio.gather(*[worker.generate.remote(**kwargs) for worker in self.workers])
+        if not outputs:
+            raise RuntimeError("HF rollout proxy has no FSDP workers.")
+        expected = outputs[0].token_ids
+        if any(output.token_ids != expected for output in outputs[1:]):
+            raise RuntimeError("HF rollout FSDP ranks sampled different token sequences; check rank RNG state.")
+        return outputs[0]
+
+    async def wake_up(self):
+        await asyncio.gather(*[worker.wake_up.remote() for worker in self.workers])
+
+    async def sleep(self):
+        await asyncio.gather(*[worker.sleep.remote() for worker in self.workers])
+
+    async def clear_kv_cache(self):
+        return None
+
+
+class HFRolloutReplica(RolloutReplica):
+    """One logical Transformers server backed by the complete FSDP worker group."""
+
+    async def init_hybrid(self, worker_group: RayWorkerGroup):
+        self.rollout_mode = RolloutMode.HYBRID
+        self.workers = worker_group.workers
+        await self.launch_servers()
+
+    def get_ray_class_with_init_args(self) -> RayClassWithInitArgs:
+        raise NotImplementedError("HF rollout supports hybrid mode only; it must share the on-policy actor.")
+
+    async def launch_servers(self):
+        if self.rollout_mode != RolloutMode.HYBRID:
+            raise NotImplementedError("HF rollout supports hybrid mode only.")
+        server = HFRolloutServer.remote(self.workers)
+        self.servers = [server]
+        self._server_handle = server
+        self._server_address = None
+
+
 # Loader functions for built-in types
 def _load_vllm():
     from verl.workers.rollout.vllm_rollout.vllm_async_server import vLLMReplica
@@ -278,9 +327,14 @@ def _load_sglang():
     return SGLangReplica
 
 
+def _load_hf():
+    return HFRolloutReplica
+
+
 # Register built-in types
 RolloutReplicaRegistry.register("vllm", _load_vllm)
 RolloutReplicaRegistry.register("sglang", _load_sglang)
+RolloutReplicaRegistry.register("hf", _load_hf)
 
 
 # Original function for backward compatibility

@@ -643,16 +643,31 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # 3. init trainer and rollout random states
         self.torch_random_states = get_torch_device().get_rng_state()
-        gen_dp_rank = rollout_device_mesh["dp"].get_local_rank()
+        # HF rollout calls every FSDP rank for the same request.  Identical RNG
+        # state keeps sampling collective and lets the proxy verify that each
+        # rank produced the same sequence.
+        gen_dp_rank = 0 if rollout_name == "hf" else rollout_device_mesh["dp"].get_local_rank()
         get_torch_device().manual_seed(gen_dp_rank + 1000)  # make sure all tp ranks have the same random states
         self.gen_random_states = get_torch_device().get_rng_state()
         get_torch_device().set_rng_state(self.torch_random_states)
 
         # 4. build rollout model
         log_gpu_memory_usage(f"Before building {self.config.rollout.name} rollout", logger=logger)
-        self.rollout = get_rollout_class(rollout_config.name, rollout_config.mode)(
-            config=rollout_config, model_config=model_config, device_mesh=rollout_device_mesh
-        )
+        if rollout_name == "hf":
+            from verl.workers.rollout.hf_rollout import HFRollout
+
+            self.rollout = HFRollout(
+                module=self.actor_module_fsdp,
+                config=rollout_config,
+                model_config=model_config,
+                device_mesh=rollout_device_mesh,
+                processor=self.processor,
+                tokenizer=self.tokenizer,
+            )
+        else:
+            self.rollout = get_rollout_class(rollout_config.name, rollout_config.mode)(
+                config=rollout_config, model_config=model_config, device_mesh=rollout_device_mesh
+            )
         log_gpu_memory_usage(f"After building {self.config.rollout.name} rollout", logger=logger)
 
         # Full params
@@ -686,6 +701,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if self._is_offload_param:
             load_fsdp_model_to_gpu(self.actor_module_fsdp)
         log_gpu_memory_usage("After load_fsdp_model_to_gpu", logger=logger)
+
+        if self.config.rollout.name == "hf":
+            self.actor_module_fsdp.eval()
+            self.torch_random_states = get_torch_device().get_rng_state()
+            get_torch_device().set_rng_state(self.gen_random_states)
+            return
 
         peft_config = None
         peft_model = getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
@@ -769,6 +790,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             log_gpu_memory_usage("After rollout offload", logger=logger)
 
         self.actor_module_fsdp.train()
+
+        if self.config.rollout.name == "hf" and self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
 
         # add empty cache after each compute
         aggressive_empty_cache(force_sync=True)
@@ -2079,6 +2103,15 @@ class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
         sampling_params: dict[str, Any],
         request_id: str,
         image_data: Optional[list[Any]] = None,
+        video_data: Optional[list[Any]] = None,
+        text_data: Optional[str] = None,
     ) -> list[int]:
-        ret = await self.rollout.generate(prompt_ids, sampling_params, request_id, image_data=image_data)
+        ret = await self.rollout.generate(
+            prompt_ids,
+            sampling_params,
+            request_id,
+            image_data=image_data,
+            video_data=video_data,
+            text_data=text_data,
+        )
         return ret

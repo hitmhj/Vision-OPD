@@ -232,6 +232,7 @@ class ToolAgentLoop(AgentLoopBase):
                 sampling_params=sampling_params,
                 image_data=agent_data.image_data,
                 video_data=agent_data.video_data,
+                text_data=self._last_raw_prompt,
             )
 
         agent_data.assistant_turns += 1

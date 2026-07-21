@@ -61,6 +61,7 @@ class SingleTurnAgentLoop(AgentLoopBase):
                 sampling_params=sampling_params,
                 image_data=images,
                 video_data=videos,
+                text_data=self._last_raw_prompt,
             )
         response_mask = [1] * len(output.token_ids)
         response_length = self._get_response_length()

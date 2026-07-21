@@ -1,0 +1,32 @@
+# Direct dependencies for the Vision-OPD training path on the target image.
+# Resolve these into a complete cp311-aarch64 wheelhouse before the offline job.
+# Versions already specified by the user are retained where the project imports
+# them.  See docs/ascend_910b.md for the two unavoidable stack deviations.
+accelerate==1.12.0
+antlr4-python3-runtime==4.9.3
+cachetools==5.3.3
+cloudpickle==3.1.2
+codetiming==1.4.0
+datasets==4.4.2
+einops==0.8.2
+filelock==3.24.3
+hydra-core==1.3.2
+numpy==1.26.4
+omegaconf==2.3.0
+packaging==25.0
+pandas==2.3.1
+peft==0.18.0
+Pillow==10.3.0
+psutil==7.0.0
+pyarrow==21.0.0
+pydantic==2.12.5
+PyYAML==6.0.2
+qwen-vl-utils==0.0.14
+ray==2.53.0
+safetensors==0.7.0
+tensordict==0.10.0
+torchdata==0.11.0
+tqdm==4.67.3
+# Qwen3.5 was added after the 4.52 line and the official model has no remote
+# modeling module to load with trust_remote_code.  This is therefore required.
+transformers==5.5.0
