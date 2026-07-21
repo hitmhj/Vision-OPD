@@ -58,7 +58,7 @@ export HF_DATASETS_CACHE="${VOPD_CACHE_DIR}/datasets"
 export TRANSFORMERS_CACHE="${VOPD_CACHE_DIR}/transformers"
 export XDG_CACHE_HOME="${VOPD_CACHE_DIR}"
 export PIP_NO_INDEX=1
-export RAY_TMPDIR="${VOPD_RUNTIME_DIR}/ray"
+export RAY_TMPDIR="${VOPD_RAY_TMPDIR}"
 export ASCEND_LAUNCH_BLOCKING="${ASCEND_LAUNCH_BLOCKING:-0}"
 export ASCEND_SLOG_PRINT_TO_STDOUT="${ASCEND_SLOG_PRINT_TO_STDOUT:-0}"
 export ASCEND_GLOBAL_LOG_LEVEL="${ASCEND_GLOBAL_LOG_LEVEL:-3}"
@@ -72,11 +72,12 @@ export ACLNN_CACHE_LIMIT="${ACLNN_CACHE_LIMIT:-100000}"
 export PYTORCH_NPU_ALLOC_CONF="${PYTORCH_NPU_ALLOC_CONF:-expandable_segments:True}"
 
 mkdir -p "${VOPD_CACHE_DIR}" "${VOPD_RUNTIME_DIR}" "${VOPD_CHECKPOINT_DIR}" \
-    "${VOPD_ROLLOUT_DIR}" "${VOPD_MERGED_DIR}" "${VOPD_LOG_DIR}"
+    "${VOPD_ROLLOUT_DIR}" "${VOPD_MERGED_DIR}" "${VOPD_LOG_DIR}" "${RAY_TMPDIR}"
 
 echo "[env] project=${PROJECT_ROOT}"
 echo "[env] image=${MA_CONTAINER_IMAGE_URI:-unknown}"
 echo "[env] python=$(${VOPD_PYTHON} --version 2>&1)"
+echo "[env] ray_tmpdir=${RAY_TMPDIR}"
 command -v npu-smi >/dev/null 2>&1 && npu-smi info || true
 
 if [[ "${VOPD_INSTALL_DEPS}" == "1" && "${VOPD_DRY_RUN}" != "1" ]]; then
@@ -179,7 +180,8 @@ elif [[ "${VOPD_DRY_RUN}" != "1" && "${VOPD_NNODES}" -gt 1 ]]; then
     RAY_CLUSTER_ADDRESS="${MASTER_ADDR}:${VOPD_MASTER_PORT}"
     if [[ "${VOPD_NODE_RANK}" == "0" ]]; then
         echo "[ray] starting head at ${RAY_CLUSTER_ADDRESS}"
-        ray start --head --node-ip-address "${MASTER_ADDR}" --port "${VOPD_MASTER_PORT}" --disable-usage-stats
+        ray start --head --node-ip-address "${MASTER_ADDR}" --port "${VOPD_MASTER_PORT}" \
+            --temp-dir "${RAY_TMPDIR}" --disable-usage-stats
         export RAY_ADDRESS="${RAY_CLUSTER_ADDRESS}"
         RAY_OVERRIDE+=("+ray_kwargs.ray_init.address=auto")
     else
