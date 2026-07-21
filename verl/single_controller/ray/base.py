@@ -846,6 +846,8 @@ def _bind_workers_method_to_parent(cls, key, user_defined_cls):
     Note that we only bind public methods that are decorated by register
     """
 
+    force_sync_coroutines = os.environ.get("VOPD_SYNC_RAY_ACTOR", "0") == "1"
+
     for method_name in dir(user_defined_cls):
         try:
             method = getattr(user_defined_cls, method_name)
@@ -867,7 +869,20 @@ def _bind_workers_method_to_parent(cls, key, user_defined_cls):
                     # dispatch to the actual worker
                     return await getattr(self.worker_dict[key], name)(*args, **kwargs)
 
-                wrapper = async_func if inspect.iscoroutinefunction(method) else func  # noqa: B023
+                def sync_coroutine_func(self, *args, **kwargs):
+                    import asyncio
+
+                    _bind_npu_to_current_ray_thread()
+                    # Keep Ascend native calls on the normal Ray actor thread.
+                    # The HF rollout proxy already serializes generation, so
+                    # running its coroutine to completion does not remove any
+                    # effective request concurrency.
+                    return asyncio.run(getattr(self.worker_dict[key], name)(*args, **kwargs))
+
+                if inspect.iscoroutinefunction(method):
+                    wrapper = sync_coroutine_func if force_sync_coroutines else async_func
+                else:
+                    wrapper = func
 
                 return wrapper
 
