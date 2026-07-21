@@ -27,12 +27,14 @@ complete cp311-aarch64 wheelhouse under `envs/wheels/cp311-aarch64` when needed,
 then run:
 
 ```bash
-VOPD_INSTALL_DEPS=1 bash scripts/start_vision_opd_ascend.sh
+bash scripts/start_vision_opd_ascend.sh
 ```
 
-Set `VOPD_INSTALL_DEPS=0` (the default) when the non-core requirements are
-already present. Do not use `torchrun`; the entrypoint creates the single Ray
-driver and FSDP/HCCL worker group. See [the Atlas 910B adaptation guide](docs/ascend_910b.md)
+The one-shot platform entrypoint enables offline dependency installation and
+post-training checkpoint merge by default, so the submitted command can be only
+`bash scripts/start_vision_opd_ascend.sh`. Set `VOPD_INSTALL_DEPS=0` only when
+the non-core requirements are already present. Do not use `torchrun`; the
+entrypoint creates the single Ray driver and FSDP/HCCL worker group. See [the Atlas 910B adaptation guide](docs/ascend_910b.md)
 for the compatibility matrix, paths, multi-node behavior, checkpoint merge,
 inference command, and diagnostics.
 

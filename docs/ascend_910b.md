@@ -99,8 +99,9 @@ importance correction, checkpoint contents, and merger semantics.
 
 `requirements-ascend.txt` contains only direct active-path packages. The
 offline wheelhouse must contain their full transitive closure for Python 3.11
-and aarch64. `VOPD_INSTALL_DEPS=1` enables a no-index install; it is off by
-default so a prebuilt image or mounted environment is reused.
+and aarch64. The one-shot platform entrypoint enables the no-index install and
+post-training merge by default. A prebuilt environment can still opt out with
+`VOPD_INSTALL_DEPS=0`.
 
 Necessary additions are accelerate (FSDP loading), Hydra/OmegaConf/ANTLR
 (configuration), Ray/cloudpickle/cachetools (distributed orchestration),
@@ -150,7 +151,8 @@ output/merged/                merged Hugging Face checkpoints
 output/logs/                  driver logs
 ```
 
-Training uses one fixed command:
+Training uses one fixed command. It installs the staged non-core wheels, runs
+training, and merges the newest checkpoint without command prefixes:
 
 ```bash
 bash scripts/start_vision_opd_ascend.sh
