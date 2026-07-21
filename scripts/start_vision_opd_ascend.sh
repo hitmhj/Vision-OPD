@@ -70,9 +70,13 @@ export HCCL_EXEC_TIMEOUT="${HCCL_EXEC_TIMEOUT:-18000}"
 export HCCL_IF_BASE_PORT="${HCCL_IF_BASE_PORT:-64000}"
 export ACLNN_CACHE_LIMIT="${ACLNN_CACHE_LIMIT:-100000}"
 export PYTORCH_NPU_ALLOC_CONF="${PYTORCH_NPU_ALLOC_CONF:-expandable_segments:True}"
+export ACL_OP_COMPILER_CACHE_MODE="${ACL_OP_COMPILER_CACHE_MODE:-enable}"
+export ACL_OP_COMPILER_CACHE_DIR="${ACL_OP_COMPILER_CACHE_DIR:-${VOPD_NPU_CACHE_DIR}}"
+export ASCEND_CACHE_PATH="${ASCEND_CACHE_PATH:-${VOPD_NPU_CACHE_DIR}}"
 
 mkdir -p "${VOPD_CACHE_DIR}" "${VOPD_RUNTIME_DIR}" "${VOPD_CHECKPOINT_DIR}" \
-    "${VOPD_ROLLOUT_DIR}" "${VOPD_MERGED_DIR}" "${VOPD_LOG_DIR}" "${RAY_TMPDIR}"
+    "${VOPD_ROLLOUT_DIR}" "${VOPD_MERGED_DIR}" "${VOPD_LOG_DIR}" "${RAY_TMPDIR}" \
+    "${VOPD_NPU_CACHE_DIR}"
 
 echo "[env] project=${PROJECT_ROOT}"
 echo "[env] image=${MA_CONTAINER_IMAGE_URI:-unknown}"
@@ -80,13 +84,35 @@ echo "[env] python=$(${VOPD_PYTHON} --version 2>&1)"
 echo "[env] ray_tmpdir=${RAY_TMPDIR}"
 echo "[env] npu_asd_config=${NPU_ASD_CONFIG}"
 echo "[env] sync_ray_actor=${VOPD_SYNC_RAY_ACTOR}"
+echo "[env] npu_compiler_cache=${ACL_OP_COMPILER_CACHE_DIR}"
 command -v npu-smi >/dev/null 2>&1 && npu-smi info || true
+
+probe_ascend_native() {
+    local phase="$1"
+    if [[ "${VOPD_DRY_RUN}" == "1" ]]; then
+        echo "[dry-run] would run native Ascend probe (${phase})"
+        return 0
+    fi
+    local status
+    if TASK_QUEUE_ENABLE=0 COMBINED_ENABLE=0 \
+        "${VOPD_PYTHON}" "${PROJECT_ROOT}/scripts/probe_ascend_native.py" "${phase}"; then
+        return 0
+    else
+        status=$?
+    fi
+    echo "[WARNING] native Ascend probe (${phase}) failed with status ${status}; continuing for diagnostics" >&2
+    return 0
+}
+
+probe_ascend_native "pre-deps"
 
 if [[ "${VOPD_INSTALL_DEPS}" == "1" && "${VOPD_DRY_RUN}" != "1" ]]; then
     echo "[deps] installing non-core packages from ${VOPD_WHEELHOUSE}"
     "${VOPD_PYTHON}" -m pip install --no-index --find-links "${VOPD_WHEELHOUSE}" \
         -r "${PROJECT_ROOT}/requirements-ascend.txt"
 fi
+
+probe_ascend_native "post-deps"
 
 if [[ "${VOPD_DRY_RUN}" != "1" ]]; then
     "${VOPD_PYTHON}" - <<'PY'
