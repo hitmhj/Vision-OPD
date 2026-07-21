@@ -52,6 +52,11 @@ def main() -> None:
     assert '${NPU_ASD_CONFIG:=enable:false}' in env_text, (
         "torch-npu 2.6 must skip the disabled optional ASD native capability probe"
     )
+    npu_patch = (root / "verl/models/transformers/npu_patch.py").read_text(encoding="utf-8")
+    assert "modeling_qwen2_5_vl.Qwen2_5_VLRMSNorm.forward" in npu_patch, (
+        "transformers 5.5 exposes Qwen2_5_VLRMSNorm for Qwen2.5-VL"
+    )
+    assert "modeling_qwen2_5_vl.Qwen2RMSNorm" not in npu_patch
 
     used = set(re.findall(r"\$\{(VOPD_[A-Z0-9_]+)", launcher))
     defined = set(re.findall(r"\$\{(VOPD_[A-Z0-9_]+):=", env_text))
