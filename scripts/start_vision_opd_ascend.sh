@@ -48,6 +48,7 @@ source_first_existing "ASDSIP" \
 
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
+export PYTHONFAULTHANDLER=1
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
@@ -86,13 +87,19 @@ fi
 
 if [[ "${VOPD_DRY_RUN}" != "1" ]]; then
     "${VOPD_PYTHON}" - <<'PY'
+import importlib.metadata as metadata
 import platform
 import re
 import sys
-import ray
-import torch
-import torch_npu
-import transformers
+
+
+def dist_version(*names):
+    for name in names:
+        try:
+            return metadata.version(name)
+        except metadata.PackageNotFoundError:
+            continue
+    return "not-installed"
 
 
 def major_minor(value):
@@ -105,21 +112,29 @@ def version_warning(condition, message):
         print(f"[WARNING] {message}", file=sys.stderr)
 
 
+torch_version = dist_version("torch")
+torch_npu_version = dist_version("torch-npu", "torch_npu")
+transformers_version = dist_version("transformers")
+ray_version = dist_version("ray")
+
 print(f"[runtime] platform={platform.platform()} machine={platform.machine()}")
-print(f"[runtime] torch={torch.__version__} torch_npu={torch_npu.__version__}")
-print(f"[runtime] transformers={transformers.__version__} ray={ray.__version__}")
-print(f"[runtime] npu_available={torch.npu.is_available()} npu_count={torch.npu.device_count()}")
+print(f"[runtime] torch={torch_version} torch_npu={torch_npu_version}")
+print(f"[runtime] transformers={transformers_version} ray={ray_version}")
+print("[runtime] native torch/torch_npu import is deferred to the real training process")
 version_warning(sys.version_info[:2] != (3, 11), f"validated Python is 3.11, imported {platform.python_version()}; continuing")
-version_warning(major_minor(torch.__version__) != ("2", "6"), f"target image declares torch 2.6, imported {torch.__version__}; continuing")
+version_warning(major_minor(torch_version) != ("2", "6"), f"target image declares torch 2.6, installed {torch_version}; continuing")
+version_warning(torch_npu_version == "not-installed", "torch-npu distribution metadata was not found; continuing")
 version_warning(
-    major_minor(torch.__version__) != major_minor(torch_npu.__version__),
-    f"torch {torch.__version__} and torch-npu {torch_npu.__version__} have different major/minor versions; continuing",
+    major_minor(torch_version) is not None
+    and major_minor(torch_npu_version) is not None
+    and major_minor(torch_version) != major_minor(torch_npu_version),
+    f"torch {torch_version} and torch-npu {torch_npu_version} have different major/minor versions; continuing",
 )
 version_warning(
-    major_minor(transformers.__version__) != ("5", "5"),
-    f"Qwen3.5 path was validated with transformers 5.5, imported {transformers.__version__}; continuing",
+    major_minor(transformers_version) != ("5", "5"),
+    f"Qwen3.5 path was validated with transformers 5.5, installed {transformers_version}; continuing",
 )
-version_warning(ray.__version__ != "2.53.0", f"Ray was validated at 2.53.0, imported {ray.__version__}; continuing")
+version_warning(ray_version != "2.53.0", f"Ray was validated at 2.53.0, installed {ray_version}; continuing")
 PY
 fi
 

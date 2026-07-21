@@ -38,6 +38,18 @@ def main() -> None:
 
     launcher = (root / "scripts/start_vision_opd_ascend.sh").read_text(encoding="utf-8")
     env_text = (root / "vision_opd_ascend.env").read_text(encoding="utf-8")
+
+    probe_marker = '"${VOPD_PYTHON}" - <<\'PY\''
+    assert probe_marker in launcher, "missing warning-only version probe"
+    version_probe = launcher.split(probe_marker, maxsplit=1)[1].split("\nPY\n", maxsplit=1)[0].lstrip("\n")
+    compile(version_probe, "start_vision_opd_ascend.sh:version_probe", "exec")
+    assert "importlib.metadata" in version_probe, "version probe must use distribution metadata"
+    native_probe_imports = ("import torch", "import torch_npu", "import ray", "import transformers")
+    assert not any(value in version_probe for value in native_probe_imports), (
+        "warning-only version probe must not import native/runtime packages"
+    )
+    assert "PYTHONFAULTHANDLER=1" in launcher, "native training failures should emit Python fault diagnostics"
+
     used = set(re.findall(r"\$\{(VOPD_[A-Z0-9_]+)", launcher))
     defined = set(re.findall(r"\$\{(VOPD_[A-Z0-9_]+):=", env_text))
     assert not sorted(used - defined - {"VOPD_MASTER_ADDR"}), "launcher contains undefined VOPD variables"

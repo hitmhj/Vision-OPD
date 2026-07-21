@@ -5,10 +5,11 @@ This adaptation targets:
 `pytorch_2.6.0-cann_8.2.rc1-py_3.11-euler_2.10.11-aarch64-snt9b`
 
 It does not install or replace `torch`, `torch-npu`, CANN, HCCL, or an
-accelerator-specific `torchvision`. The startup script prints the versions it
-actually imports from the target image. That output is authoritative; this
-repository cannot truthfully claim the image's patch build without running the
-image.
+accelerator-specific `torchvision`. The warning-only startup preflight reads
+installed distribution metadata without importing native NPU libraries.
+Native imports are deferred to the real training process, where an import or
+operator failure keeps its original nonzero status. This repository cannot
+truthfully claim the image's patch build without running the image.
 
 ## Lifecycle audit
 
