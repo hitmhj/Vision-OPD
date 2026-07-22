@@ -5,11 +5,11 @@ This adaptation targets:
 `pytorch_2.6.0-cann_8.2.rc1-py_3.11-euler_2.10.11-aarch64-snt9b`
 
 It does not install or replace `torch`, `torch-npu`, CANN, HCCL, or an
-accelerator-specific `torchvision`. The warning-only startup preflight reads
-installed distribution metadata without importing native NPU libraries.
-Native imports are deferred to the real training process, where an import or
-operator failure keeps its original nonzero status. This repository cannot
-truthfully claim the image's patch build without running the image.
+accelerator-specific `torchvision`. The warning-only startup diagnostics run a
+one-element native NPU copy before and after non-core dependency installation.
+They report failures without turning version-string differences into hard
+gates. This repository cannot truthfully claim the image's patch build without
+running the image.
 
 ## Lifecycle audit
 
@@ -31,7 +31,9 @@ xFormers, vLLM 0.18, and incompatible package versions.
 The Ascend lifecycle keeps the same algorithm and checkpoint flow:
 
 1. Resolve the project root and project-relative configuration.
-2. Source the CANN/NNAL/ATB/ASDSIP files that actually exist in the image.
+2. Probe the managed image's untouched native environment. Keep it unchanged
+   when it works; only source the image CANN environment as a repair fallback.
+   The HF rollout path does not inject the unused ATB/ASDSIP libraries.
 3. Reuse and report the image's `torch`/`torch-npu` stack.
 4. Optionally install only non-core wheels from the offline cp311-aarch64
    wheelhouse.

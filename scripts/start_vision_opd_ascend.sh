@@ -32,20 +32,6 @@ source_first_existing() {
     return 0
 }
 
-source_first_existing "CANN" \
-    "${ASCEND_TOOLKIT_HOME:+${ASCEND_TOOLKIT_HOME}/set_env.sh}" \
-    "/usr/local/Ascend/ascend-toolkit/set_env.sh" \
-    "/usr/local/Ascend/latest/set_env.sh" \
-    "/usr/local/Ascend/ascend-toolkit/latest/set_env.sh"
-source_first_existing "NNAL/ATB" \
-    "${ATB_HOME_PATH:+${ATB_HOME_PATH}/set_env.sh}" \
-    "/usr/local/Ascend/nnal/atb/set_env.sh" \
-    "/usr/local/Ascend/atb/set_env.sh"
-source_first_existing "ASDSIP" \
-    "${ASDSIP_HOME_PATH:+${ASDSIP_HOME_PATH}/set_env.sh}" \
-    "/usr/local/Ascend/nnal/asdsip/set_env.sh" \
-    "/usr/local/Ascend/asdsip/set_env.sh"
-
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1
@@ -87,24 +73,39 @@ echo "[env] sync_ray_actor=${VOPD_SYNC_RAY_ACTOR}"
 echo "[env] npu_compiler_cache=${ACL_OP_COMPILER_CACHE_DIR}"
 command -v npu-smi >/dev/null 2>&1 && npu-smi info || true
 
-probe_ascend_native() {
+run_ascend_native_probe() {
     local phase="$1"
     if [[ "${VOPD_DRY_RUN}" == "1" ]]; then
         echo "[dry-run] would run native Ascend probe (${phase})"
         return 0
     fi
-    local status
-    if TASK_QUEUE_ENABLE=0 COMBINED_ENABLE=0 \
-        "${VOPD_PYTHON}" "${PROJECT_ROOT}/scripts/probe_ascend_native.py" "${phase}"; then
-        return 0
-    else
-        status=$?
-    fi
-    echo "[WARNING] native Ascend probe (${phase}) failed with status ${status}; continuing for diagnostics" >&2
-    return 0
+    TASK_QUEUE_ENABLE=0 COMBINED_ENABLE=0 \
+        "${VOPD_PYTHON}" "${PROJECT_ROOT}/scripts/probe_ascend_native.py" "${phase}"
 }
 
-probe_ascend_native "pre-deps"
+# Managed Ascend images normally enter the job with their matched CANN paths
+# already active. Re-sourcing CANN/ATB/ASDSIP can prepend a second copy of
+# native libraries and change what torch-npu resolves on its first operation.
+# Preserve a working image environment. Only source CANN when the untouched
+# image cannot complete the minimal native operation. The selected HF rollout
+# path does not import ATB or ASDSIP, so those optional stacks are not injected.
+if run_ascend_native_probe "pre-deps-image-env"; then
+    echo "[env] native image environment passed; vendor set_env.sh files will not be re-sourced"
+else
+    IMAGE_PROBE_STATUS=$?
+    echo "[WARNING] native Ascend probe (pre-deps-image-env) failed with status ${IMAGE_PROBE_STATUS}; trying the image CANN set_env.sh" >&2
+    source_first_existing "CANN" \
+        "${ASCEND_TOOLKIT_HOME:+${ASCEND_TOOLKIT_HOME}/set_env.sh}" \
+        "/usr/local/Ascend/ascend-toolkit/set_env.sh" \
+        "/usr/local/Ascend/latest/set_env.sh" \
+        "/usr/local/Ascend/ascend-toolkit/latest/set_env.sh"
+    if run_ascend_native_probe "pre-deps-cann-env"; then
+        echo "[env] CANN environment repair passed"
+    else
+        CANN_PROBE_STATUS=$?
+        echo "[WARNING] native Ascend probe (pre-deps-cann-env) failed with status ${CANN_PROBE_STATUS}; continuing for diagnostics" >&2
+    fi
+fi
 
 if [[ "${VOPD_INSTALL_DEPS}" == "1" && "${VOPD_DRY_RUN}" != "1" ]]; then
     echo "[deps] installing non-core packages from ${VOPD_WHEELHOUSE}"
@@ -112,7 +113,12 @@ if [[ "${VOPD_INSTALL_DEPS}" == "1" && "${VOPD_DRY_RUN}" != "1" ]]; then
         -r "${PROJECT_ROOT}/requirements-ascend.txt"
 fi
 
-probe_ascend_native "post-deps"
+if run_ascend_native_probe "post-deps"; then
+    :
+else
+    POST_DEPS_PROBE_STATUS=$?
+    echo "[WARNING] native Ascend probe (post-deps) failed with status ${POST_DEPS_PROBE_STATUS}; continuing for diagnostics" >&2
+fi
 
 if [[ "${VOPD_DRY_RUN}" != "1" ]]; then
     "${VOPD_PYTHON}" - <<'PY'
