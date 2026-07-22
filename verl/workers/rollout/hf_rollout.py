@@ -46,6 +46,56 @@ class HFRollout(BaseRollout):
         # Parameter offload is handled by ActorRolloutRefWorker.trainer_mode.
         return None
 
+    def _prepare_qwen35_position_ids(self, model_inputs: dict[str, torch.Tensor]) -> None:
+        """Convert processor-only modality ids into Qwen3.5 position ids.
+
+        Transformers 5.5's Qwen3.5 processor emits ``mm_token_type_ids`` for
+        M-RoPE construction, while the model forward used by this verl branch
+        does not accept that processor-only key.  Consume it here without
+        discarding its semantics, matching the AgentLoop training path.
+        """
+        mm_token_type_ids = model_inputs.pop("mm_token_type_ids", None)
+        if mm_token_type_ids is None:
+            return
+
+        model_type = getattr(self.model_config.hf_config, "model_type", None)
+        if model_type not in {"qwen3_5", "qwen3_5_moe"}:
+            raise RuntimeError(f"HF rollout received mm_token_type_ids for unsupported model type {model_type!r}.")
+
+        get_rope_index = getattr(self.processor, "get_rope_index", None)
+        if not callable(get_rope_index):
+            raise RuntimeError("Qwen3.5 processor does not expose get_rope_index required for multimodal rollout.")
+
+        input_ids = model_inputs["input_ids"]
+        attention_mask = model_inputs["attention_mask"]
+        rope_output = get_rope_index(
+            input_ids=input_ids,
+            mm_token_type_ids=mm_token_type_ids,
+            image_grid_thw=model_inputs.get("image_grid_thw"),
+            video_grid_thw=model_inputs.get("video_grid_thw"),
+            attention_mask=attention_mask,
+        )
+        vision_position_ids = rope_output[0] if isinstance(rope_output, tuple) else rope_output
+        if vision_position_ids.ndim != 3:
+            raise RuntimeError(
+                f"Qwen3.5 get_rope_index returned shape {tuple(vision_position_ids.shape)}, expected 3 dimensions."
+            )
+        if vision_position_ids.shape[0] == 3 and vision_position_ids.shape[1] == input_ids.shape[0]:
+            vision_position_ids = vision_position_ids.transpose(0, 1)
+        elif not (
+            vision_position_ids.shape[0] == input_ids.shape[0] and vision_position_ids.shape[1] == 3
+        ):
+            raise RuntimeError(
+                f"Qwen3.5 get_rope_index returned shape {tuple(vision_position_ids.shape)}, "
+                "expected (3, batch, sequence) or (batch, 3, sequence)."
+            )
+
+        text_position_ids = attention_mask.to(dtype=vision_position_ids.dtype).cumsum(dim=-1) - 1
+        text_position_ids.masked_fill_(attention_mask == 0, 1)
+        model_inputs["position_ids"] = torch.cat(
+            (text_position_ids.unsqueeze(1), vision_position_ids), dim=1
+        )  # (batch, 4, sequence)
+
     def _prepare_inputs(
         self,
         prompt_ids: list[int],
@@ -90,7 +140,11 @@ class HFRollout(BaseRollout):
                 "HF rollout could not reproduce AgentLoop multimodal prompt ids. "
                 "Check the local Qwen3.5 processor/chat-template files and disable prompt truncation."
             )
-        return {key: value.to(device) if torch.is_tensor(value) else value for key, value in processor_inputs.items()}
+        model_inputs = {
+            key: value.to(device) if torch.is_tensor(value) else value for key, value in processor_inputs.items()
+        }
+        self._prepare_qwen35_position_ids(model_inputs)
+        return model_inputs
 
     @torch.no_grad()
     async def generate(
