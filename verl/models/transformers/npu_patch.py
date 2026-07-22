@@ -20,6 +20,7 @@ import torch.nn.functional as F
 import torch_npu
 from torch import nn
 from transformers.activations import ACT2FN
+from transformers.cache_utils import DynamicLayer
 from transformers.models.qwen2 import modeling_qwen2
 from transformers.models.qwen2_5_vl import modeling_qwen2_5_vl
 from transformers.models.qwen3 import modeling_qwen3
@@ -29,6 +30,32 @@ from transformers.models.qwen3_vl_moe import modeling_qwen3_vl_moe
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
+
+
+_dynamic_layer_update = DynamicLayer.update
+
+
+def dynamic_layer_update_npu(self, key_states, value_states, *args, **kwargs):
+    """Avoid concatenating rank-1 empty caches with rank-4 NPU states.
+
+    Transformers initializes ``DynamicLayer`` with ``torch.tensor([])`` and
+    relies on CPU/CUDA's special handling of a one-dimensional empty tensor in
+    ``torch.cat``.  Ascend dispatches that first update to ``aclnnCat``, whose
+    regular rank validation rejects the inputs with error 161002.  A direct
+    first write has identical cache contents and keeps the upstream path for
+    every subsequent decoding token.
+    """
+    if not self.is_initialized:
+        self.lazy_initialization(key_states, value_states)
+
+    if self.keys.numel() == 0 and self.values.numel() == 0:
+        # ``cat([empty, states])`` returns a fresh tensor, so clone here rather
+        # than retaining aliases to the model's temporary K/V projections.
+        self.keys = key_states.clone()
+        self.values = value_states.clone()
+        return self.keys, self.values
+
+    return _dynamic_layer_update(self, key_states, value_states, *args, **kwargs)
 
 
 def rms_norm_forward_npu(self, x):
@@ -226,6 +253,9 @@ class NPUQwen3VLMoeTextSparseMoeBlock(nn.Module):
         routed_out = self.experts(hidden_states, routing_weights, router_indices)
         return routed_out
 
+
+# Patches shared by Transformer generation caches
+DynamicLayer.update = dynamic_layer_update_npu
 
 # Patches for Qwen2 Model
 modeling_qwen2.Qwen2RMSNorm.forward = rms_norm_forward_npu
