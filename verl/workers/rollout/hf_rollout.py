@@ -80,10 +80,10 @@ class HFRollout(BaseRollout):
             raise RuntimeError(
                 f"Qwen3.5 get_rope_index returned shape {tuple(vision_position_ids.shape)}, expected 3 dimensions."
             )
-        if vision_position_ids.shape[0] == 3 and vision_position_ids.shape[1] == input_ids.shape[0]:
+        if vision_position_ids.shape[0] == input_ids.shape[0] and vision_position_ids.shape[1] == 3:
             vision_position_ids = vision_position_ids.transpose(0, 1)
         elif not (
-            vision_position_ids.shape[0] == input_ids.shape[0] and vision_position_ids.shape[1] == 3
+            vision_position_ids.shape[0] == 3 and vision_position_ids.shape[1] == input_ids.shape[0]
         ):
             raise RuntimeError(
                 f"Qwen3.5 get_rope_index returned shape {tuple(vision_position_ids.shape)}, "
@@ -93,8 +93,8 @@ class HFRollout(BaseRollout):
         text_position_ids = attention_mask.to(dtype=vision_position_ids.dtype).cumsum(dim=-1) - 1
         text_position_ids.masked_fill_(attention_mask == 0, 1)
         model_inputs["position_ids"] = torch.cat(
-            (text_position_ids.unsqueeze(1), vision_position_ids), dim=1
-        )  # (batch, 4, sequence)
+            (text_position_ids.unsqueeze(0), vision_position_ids), dim=0
+        )  # (4, batch, sequence), as required by Qwen3.5 GenerationMixin
 
     def _prepare_inputs(
         self,
@@ -140,11 +140,12 @@ class HFRollout(BaseRollout):
                 "HF rollout could not reproduce AgentLoop multimodal prompt ids. "
                 "Check the local Qwen3.5 processor/chat-template files and disable prompt truncation."
             )
-        model_inputs = {
-            key: value.to(device) if torch.is_tensor(value) else value for key, value in processor_inputs.items()
-        }
+        # Build Qwen3.5's four-axis position ids on CPU.  Besides avoiding an
+        # unnecessary NPU concat, this keeps their required layout explicit:
+        # (text/temporal/height/width, batch, sequence).
+        model_inputs = dict(processor_inputs)
         self._prepare_qwen35_position_ids(model_inputs)
-        return model_inputs
+        return {key: value.to(device) if torch.is_tensor(value) else value for key, value in model_inputs.items()}
 
     @torch.no_grad()
     async def generate(
