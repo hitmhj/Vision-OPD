@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Minimal native Ascend probe used by the unified launcher."""
 
-import ctypes
 import sys
 
 
@@ -24,19 +23,17 @@ def main() -> None:
         f"[npu-probe:{phase}] torch_npu={torch_npu.__version__} path={torch_npu.__file__}",
         flush=True,
     )
-    opapi = None
-    try:
-        opapi = ctypes.CDLL("libopapi.so")
-        print(f"[npu-probe:{phase}] preloaded libopapi.so", flush=True)
-    except OSError as exc:
-        print(f"[WARNING] [npu-probe:{phase}] could not preload libopapi.so: {exc}", flush=True)
-
+    # Do not dlopen libopapi.so manually here.  torch-npu loads the required
+    # operator libraries through its own runtime path; forcing ctypes.CDLL can
+    # itself enter the failing native loader path before set_device/copy and
+    # hides which real torch-npu operation triggers the fault.
+    print(f"[npu-probe:{phase}] setting logical device 0", flush=True)
     torch.npu.set_device(0)
+    print(f"[npu-probe:{phase}] logical device 0 selected", flush=True)
     print(f"[npu-probe:{phase}] starting one-element CPU-to-NPU copy", flush=True)
     probe = torch.empty(1, dtype=torch.float32, device="cpu").to("npu:0")
     torch.npu.synchronize()
     del probe
-    del opapi
     print(f"[npu-probe:{phase}] native CPU-to-NPU copy passed", flush=True)
 
 

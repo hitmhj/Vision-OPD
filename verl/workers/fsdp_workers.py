@@ -812,24 +812,17 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # logical NPU.  Verify the context before loading the full model so a
         # native runtime problem is localized to this tiny transfer.
         if device_name == "npu":
-            import ctypes
             import fcntl
 
             lock_path = os.environ.get("VOPD_NPU_INIT_LOCK", "/tmp/vopd-npu-init.lock")
             with open(lock_path, "a") as init_lock:
                 fcntl.flock(init_lock.fileno(), fcntl.LOCK_EX)
                 try:
-                    opapi = None
-                    try:
-                        opapi = ctypes.CDLL("libopapi.so")
-                    except OSError as exc:
-                        print(f"[WARNING] rank {self.rank} could not preload libopapi.so: {exc}")
                     device = torch.device(device_name, get_device_id())
                     print(f"[npu] rank {self.rank} probing logical device {device.index}")
                     copy_probe = torch.empty(1, dtype=torch.float32, device="cpu").to(device)
                     get_torch_device().synchronize()
                     del copy_probe
-                    del opapi
                     print(f"[npu] rank {self.rank} native copy passed")
                 finally:
                     fcntl.flock(init_lock.fileno(), fcntl.LOCK_UN)
