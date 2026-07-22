@@ -181,7 +181,15 @@ class HFRollout(BaseRollout):
         self.module.eval()
         param_ctx = contextlib.nullcontext()
         if isinstance(self.module, FSDP):
-            param_ctx = FSDP.summon_full_params(self.module, writeback=False, recurse=True)
+            # ``generate`` is delegated to the wrapped HF module, so the root
+            # FSDP forward hooks are bypassed and its directly-owned params
+            # must be materialized here.  Nested FSDP modules are still called
+            # normally during generation and manage their own all-gather and
+            # reshard lifecycle.  Recursively summoning them here makes their
+            # forward reshard parameters behind the context manager's back,
+            # leaving shard-sized storage where full storage is expected on
+            # exit (the observed full-size/shard-size assertion).
+            param_ctx = FSDP.summon_full_params(self.module, writeback=False, recurse=False)
 
         generation_kwargs = {
             "do_sample": do_sample,
