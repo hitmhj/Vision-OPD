@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
+import contextlib
 import logging
 import os
+import time
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, Callable, Optional
@@ -235,15 +237,49 @@ class HFRolloutServer:
     def __init__(self, workers: list[ActorHandle]):
         self.workers = workers
         self._generate_lock = asyncio.Lock()
+        self._request_count = 0
+        self._completed_count = 0
+        self._started_at = time.monotonic()
+
+    async def _heartbeat(self, request_number: int, request_started_at: float):
+        while True:
+            await asyncio.sleep(60)
+            request_elapsed = time.monotonic() - request_started_at
+            total_elapsed = time.monotonic() - self._started_at
+            print(
+                "[hf-rollout] heartbeat: "
+                f"request={request_number} completed={self._completed_count} "
+                f"request_elapsed={request_elapsed:.0f}s total_elapsed={total_elapsed:.0f}s",
+                flush=True,
+            )
 
     async def generate(self, **kwargs) -> TokenOutput:
         async with self._generate_lock:
-            outputs = await asyncio.gather(*[worker.generate.remote(**kwargs) for worker in self.workers])
+            self._request_count += 1
+            request_number = self._request_count
+            request_started_at = time.monotonic()
+            heartbeat = asyncio.create_task(self._heartbeat(request_number, request_started_at))
+            try:
+                outputs = await asyncio.gather(*[worker.generate.remote(**kwargs) for worker in self.workers])
+            finally:
+                heartbeat.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await heartbeat
         if not outputs:
             raise RuntimeError("HF rollout proxy has no FSDP workers.")
         expected = outputs[0].token_ids
         if any(output.token_ids != expected for output in outputs[1:]):
             raise RuntimeError("HF rollout FSDP ranks sampled different token sequences; check rank RNG state.")
+        self._completed_count += 1
+        if self._completed_count == 1 or self._completed_count % 8 == 0:
+            elapsed = time.monotonic() - self._started_at
+            average = elapsed / self._completed_count
+            print(
+                "[hf-rollout] progress: "
+                f"completed_requests={self._completed_count} elapsed={elapsed:.0f}s "
+                f"average_seconds_per_request={average:.1f}",
+                flush=True,
+            )
         return outputs[0]
 
     async def wake_up(self):

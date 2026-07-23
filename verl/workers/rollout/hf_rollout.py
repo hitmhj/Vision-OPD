@@ -33,6 +33,7 @@ class HFRollout(BaseRollout):
         self.module = module
         self.processor = processor
         self.tokenizer = tokenizer
+        self._first_generate = True
 
     async def resume(self, tags: list[str]):
         # The actor owns the weights and has already been moved to the NPU.
@@ -157,7 +158,6 @@ class HFRollout(BaseRollout):
         video_data: Optional[list[Any]] = None,
         text_data: Optional[str] = None,
     ):
-        del request_id
         sampling_params = dict(sampling_params)
         configured_max_tokens = int(self.config.response_length)
         max_tokens = int(
@@ -179,6 +179,16 @@ class HFRollout(BaseRollout):
 
         model_inputs = self._prepare_inputs(prompt_ids, image_data, video_data, text_data)
         self.module.eval()
+        first_generate = self._first_generate
+        self._first_generate = False
+        rank_zero = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
+        if first_generate and rank_zero:
+            print(
+                "[hf-rollout] first request "
+                f"id={request_id[:12]} prompt_tokens={len(prompt_ids)} max_new_tokens={max_tokens}; "
+                "entering FSDP full-parameter gather",
+                flush=True,
+            )
         param_ctx = contextlib.nullcontext()
         if isinstance(self.module, FSDP):
             # ``generate`` is delegated to the wrapped HF module, so the root
@@ -206,7 +216,12 @@ class HFRollout(BaseRollout):
             generation_kwargs.update(temperature=temperature, top_p=top_p, top_k=max(0, top_k))
 
         with param_ctx, torch.autocast(device_type=get_device_name(), dtype=torch.bfloat16):
+            if first_generate and rank_zero:
+                print("[hf-rollout] full parameters ready; starting autoregressive generation", flush=True)
             output = self.module.generate(**model_inputs, **generation_kwargs)
+
+        if first_generate and rank_zero:
+            print("[hf-rollout] first autoregressive generation completed", flush=True)
 
         generated = output.sequences[0, len(prompt_ids) :].tolist()
         log_probs = None
